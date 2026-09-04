@@ -104,3 +104,20 @@ test('readThreads 는 source JSON 에서 부모 스레드를 뽑는다', () => {
 test('readThreads 는 DB 가 없으면 빈 배열', () => {
   assert.deepEqual(codex.readThreads('C:\\없는\\경로\\x.sqlite'), []);
 });
+
+test('openReadOnly 는 폴백까지 이중으로 실패해도 temp 디렉터리를 남기지 않는다', () => {
+  // 디렉터리를 sqlite 파일인 것처럼 넘기면: 1차 open(new DatabaseSync(dir, {readOnly:true}))이
+  // "unable to open database file"로 실패해 폴백 분기로 들어가고,
+  // 폴백의 fs.copyFileSync(dir, tmp) 도 디렉터리를 파일로 복사할 수 없어 실패한다.
+  // 즉 mocking 없이 "fallback 자체도 실패하는" 이중 실패 경로를 재현한다.
+  const before = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('ccl-codex-')).length;
+  const fakeDbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codextest-asdir-'));
+  try {
+    const rows = codex.readThreads(fakeDbDir);
+    assert.deepEqual(rows, []);
+    const after = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('ccl-codex-')).length;
+    assert.equal(after, before);
+  } finally {
+    fs.rmSync(fakeDbDir, { recursive: true, force: true });
+  }
+});

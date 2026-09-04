@@ -51,13 +51,30 @@ function parentOf(sourceJson) {
 }
 
 // 읽기 전용으로 연다. Codex 가 쓰는 중이라 잠겨 있으면 temp 로 복사해 읽는다.
+//
+// WAL 모드 DB 를 readOnly 로 열면 SQLite 가 옆에 -shm/-wal 사이드카 파일을
+// 스스로 만든다(실측: state_5.sqlite-shm, state_5.sqlite-wal 생성됨). 이건
+// 우리가 쓰기를 한 게 아니라 SQLite 자체의 동작이라 무해하다. immutable=1 로
+// 열면 이 사이드카가 안 생기지만, Codex 가 동시에 쓰는 중이면 torn(중간 상태)
+// 읽기를 할 위험이 있어 일부러 쓰지 않는다.
 function openReadOnly(dbPath) {
   try {
     return { db: new DatabaseSync(dbPath, { readOnly: true }), tmp: null };
   } catch {
-    const tmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-codex-')), 'state.sqlite');
-    fs.copyFileSync(dbPath, tmp);
-    return { db: new DatabaseSync(tmp, { readOnly: true }), tmp };
+    // 1차 open 이 실패한 경우에만 여기로 온다. 폴백(복사 후 재오픈) 자체가
+    // 또 실패하면(copyFileSync 실패, 또는 복사본이 손상돼 재오픈 실패)
+    // mkdtempSync 로 만든 temp 디렉터리가 정리되지 않고 남는다. 그래서
+    // 폴백 블록 전체를 try/catch 로 감싸 실패 시 temp 디렉터리를 지우고
+    // 다시 던진다 — 바깥 readThreads 의 catch 가 최종적으로 []를 반환한다.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-codex-'));
+    try {
+      const tmp = path.join(dir, 'state.sqlite');
+      fs.copyFileSync(dbPath, tmp);
+      return { db: new DatabaseSync(tmp, { readOnly: true }), tmp };
+    } catch (e) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+      throw e;
+    }
   }
 }
 
