@@ -108,8 +108,31 @@ function liveInfo(pid) {
   } catch { return null; }
 }
 
+// Codex 터미널의 신원은 Claude 상태 파일이 아니라 우리 훅이 쓴
+// ~/.codex/.cc-launcher-live/<sessionId>.json 에서 온다. 그 파일의 pid 는 훅
+// 프로세스의 부모, 즉 우리가 띄운 codex 프로세스(= PTY 의 pid)라 pid 로 역인덱스를
+// 만들면 그대로 매칭된다. list() 가 터미널마다 부르므로 1초 메모한다.
+let codexLiveMemo = { at: 0, byPid: new Map() };
+function codexLiveInfo(pid) {
+  const now = Date.now();
+  if (now - codexLiveMemo.at > 1000) {
+    const byPid = new Map();
+    try {
+      for (const [sessionId, v] of require('./codex.js').liveMap()) {
+        if (v && v.pid) byPid.set(Number(v.pid), { sessionId, status: v.status || 'idle', name: null });
+      }
+    } catch {}
+    codexLiveMemo = { at: now, byPid };
+  }
+  return codexLiveMemo.byPid.get(Number(pid)) || null;
+}
+
 function info(t) {
-  const live = t.exitCode == null ? liveInfo(t.pid) : null;
+  // provider 로 갈라야 한다. Codex 터미널이 liveInfo() 를 타면 (1) 자기 sessionId 를
+  // 영영 못 찾아 카드와 연결되지 않고, (2) Windows 의 PID 재사용으로 죽은 Claude
+  // 세션의 상태 파일을 주워 그 Claude 카드가 Codex 터미널을 가리키게 된다.
+  const live = t.exitCode != null ? null
+    : (t.provider === 'codex' ? codexLiveInfo(t.pid) : liveInfo(t.pid));
   if (live && live.sessionId && !t.sessionId) t.sessionId = live.sessionId;  // 새 세션의 ID 확보
   return {
     id: t.id, title: t.title, cwd: t.cwd, action: t.action,

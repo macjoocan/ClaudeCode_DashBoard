@@ -604,7 +604,15 @@ function stamp(ms){
   return d.getFullYear()+'.'+p(d.getMonth()+1)+'.'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
 }
 const esc = window.escHtml;
-function statusLabel(l){ return !l ? '' : (l.status === 'busy' ? '작업 중' : '대기 중'); }
+// 실행 상태 하나를 점(CSS 클래스)·글자·색으로 옮긴다. Codex 훅이 주는 'waiting'
+// (승인 대기)은 이미 있는 .st.wait 스타일에 태운다 - .st.waiting 은 CSS 에 없어서
+// 그대로 두면 '실행 중 아님' 과 같은 회색 점으로 그려졌다.
+var ST_CLASS = { busy:'busy', waiting:'wait', idle:'idle' };
+var ST_LABEL = { busy:'작업 중', waiting:'승인 대기', idle:'대기 중' };
+var ST_COLOR = { busy:'--busy', waiting:'--accent', idle:'--idle' };
+function statusClass(l){ return !l ? '' : (ST_CLASS[l.status] || 'idle'); }
+function statusLabel(l){ return !l ? '' : (ST_LABEL[l.status] || '대기 중'); }
+function statusColor(l){ return !l ? '--dim2' : (ST_COLOR[l.status] || '--idle'); }
 
 // usage.js 의 fmt() 와 동일한 규칙 - 브라우저는 서버의 CommonJS 모듈을 그대로
 // require 할 수 없어(번들러가 없다) 표시 규칙만 그대로 옮겨온다.
@@ -620,16 +628,19 @@ function usageFor(s){
 function usageForProject(p){
   return (USAGE.projects && USAGE.projects[p.key]) || null;
 }
-// Codex 는 threads.tokens_used 하나뿐이라 입력/출력/캐시 내역이 없다 - 그 차이를 title 로 드러낸다.
-function usageTitle(s, u){
-  if (s.provider === 'codex') return 'Codex 는 총량만 제공';
+// Codex 도 rollout 의 token_count 레코드에서 Claude 와 같은 내역을 뽑아 오므로
+// 평소에는 같은 툴팁을 쓴다. rollout 을 못 읽어 threads.tokens_used 로 물러선
+// 경우(u.approx)만, 그 숫자가 캐시 입력까지 포함한 총량이라 Claude 와 같은 자로
+// 잰 값이 아니라는 걸 분명히 말한다.
+function usageTitle(u){
+  if (u.approx) return 'Codex 세션 총량(threads.tokens_used) · 캐시 입력 포함이라 Claude billable 과 같은 기준이 아니다';
   return '입력 '+fmtUsage(u.input)+' · 출력 '+fmtUsage(u.output)
     +' · 캐시쓰기 '+fmtUsage(u.cacheWrite)+' · 캐시읽기 '+fmtUsage(u.cacheRead);
 }
 function usageSpan(s){
   const u = usageFor(s);
   if (!u || !u.billable) return '';
-  return '<span class="susage" title="'+esc(usageTitle(s,u))+'">'+esc(fmtUsage(u.billable))+'</span>';
+  return '<span class="susage" title="'+esc(usageTitle(u))+'">'+esc(fmtUsage(u.billable))+'</span>';
 }
 
 async function post(p, body){
@@ -643,6 +654,13 @@ function toast(msg, isErr){
   const t = $('#toast'); t.textContent = msg;
   t.className = 'show' + (isErr ? ' err' : '');
   clearTimeout(toastTimer); toastTimer = setTimeout(function(){ t.className=''; }, 3000);
+}
+
+// 훅 설치/제거 결과의 백업 경로. 고칠 파일이 애초에 없었으면 백업도 없다(null) -
+// 첫 설치가 딱 그 경우다. 예전에는 여기서 null.split() 이 터져서, 훅 12개가
+// 멀쩡히 설치된 뒤에 '설치 실패' 토스트가 떴다.
+function backupNote(bak){
+  return bak ? ' · 백업: ' + String(bak).split(/[\\/]/).pop() : ' · 기존 파일 없음(백업 불필요)';
 }
 
 /* 내장 터미널이 물고 있는 세션 ID -> 터미널 정보 */
@@ -683,7 +701,10 @@ async function pollLive(){
     const j = await (await fetch('/api/live',{cache:'no-store'})).json();
     let changed = false;
     for (const p of DATA) for (const s of p.sessions){
-      const n = j.live[s.id] || null;
+      const raw = j.live[s.id] || null;
+      // /api/live 는 Claude 와 Codex 상태를 한 맵에 담아 준다. 두 provider 의 id 가
+      // 겹칠 일은 없지만, 겹치더라도 남의 provider 상태를 세션에 붙이지 않는다.
+      const n = (raw && (raw.provider || 'claude') === s.provider) ? raw : null;
       const a = s.live ? s.live.status+s.live.pid : '';
       const b = n ? n.status+n.pid : '';
       if (a !== b){ s.live = n; changed = true; }
@@ -692,6 +713,7 @@ async function pollLive(){
       for (const p of DATA){
         p.liveCount = p.sessions.filter(s=>s.live).length;
         p.busyCount = p.sessions.filter(s=>s.live && s.live.status==='busy').length;
+        p.waitCount = p.sessions.filter(s=>s.live && s.live.status==='waiting').length;
       }
       renderCounts(); render();
       if (openSess) syncPanelHeader();
@@ -756,7 +778,7 @@ function sessionRow(p, s, emb){
   const vk = esc(s.provider)+'|'+esc(s.slug)+'|'+esc(s.id);
   return '<div class="s'+sel+'" data-view="'+vk+'">'
     + '<div class="sl1">'
-    +   '<span class="st '+(s.live ? s.live.status : '')+'" title="'+esc(statusLabel(s.live) || '실행 중 아님')+'"></span>'
+    +   '<span class="st '+statusClass(s.live)+'" title="'+esc(statusLabel(s.live) || '실행 중 아님')+'"></span>'
     +   '<span class="stitle" title="'+esc(s.title||'')+'">'+esc(s.title || '(제목 없음)')+'</span>'
     +   (e ? '<span class="tag emb">대시보드</span>' : '')
     +   '<span class="swhen" title="'+stamp(s.mtime)+'">'+ago(s.mtime)+'</span>'
@@ -783,22 +805,29 @@ function sessionGroup(p, list, emb, label, key){
 
 // 프로젝트 헤더에 붙는 사용량 합계 태그. 세션별과 달리 Claude/Codex 가 섞여
 // 합산되므로 입력/출력 내역은 없고 billable 합계와 캐시읽기 합계만 보여준다.
+// 두 provider 모두 '비캐시 입력 + 출력 + 캐시쓰기' 라는 같은 정의를 쓰기 때문에
+// 더할 수 있다. rollout 을 못 읽어 총량으로 물러선 Codex 세션이 섞여 있으면
+// (u.approx) 그 합계는 기준이 다른 값이 섞인 것이라 툴팁에 적어 준다.
 function projectUsageTag(p){
   const u = usageForProject(p);
   if (!u || !u.billable) return '';
-  const title = '토큰 사용량(billable) 합계 · 캐시읽기 '+fmtUsage(u.cacheRead)+' 별도';
-  return '<span class="tag" title="'+esc(title)+'">토큰 '+esc(fmtUsage(u.billable))+'</span>';
+  const title = '토큰 사용량(billable) 합계 · 캐시읽기 '+fmtUsage(u.cacheRead)+' 별도'
+    + (u.approx ? ' · rollout 을 못 읽은 Codex 세션의 캐시 입력 포함 총량이 섞여 있다' : '');
+  return '<span class="tag'+(u.approx?' err':'')+'" title="'+esc(title)+'">토큰 '+esc(fmtUsage(u.billable))+'</span>';
 }
 
 function projectCard(p, ss, emb){
   const claudeSs = ss.filter(s => s.provider !== 'codex');
   const codexSs  = ss.filter(s => s.provider === 'codex');
-  const st = p.busyCount ? 'busy' : (p.liveCount ? 'idle' : '');
+  // 카드 헤더의 점은 프로젝트 전체 요약이다. 승인 대기가 가장 눈에 띄어야 하지만
+  // 실제로 도는 작업이 있으면 그게 먼저다: 작업 중 > 승인 대기 > 대기 중 > 없음.
+  const st = p.busyCount ? 'busy' : (p.waitCount ? 'wait' : (p.liveCount ? 'idle' : ''));
+  const stTitle = p.busyCount ? '작업 중' : (p.waitCount ? '승인 대기' : (p.liveCount ? '대기 중' : '실행 중 아님'));
   const embN = ss.filter(s => emb.has(s.id)).length;
   const codexOn = !!(ENV && ENV.codex);
   return '<section class="card '+(p.exists?'':'missing')+' '+(p.busyCount?'hasbusy':'')+'">'
     + '<div class="chead">'
-    +   '<span class="st '+st+'" title="'+(p.busyCount?'작업 중':(p.liveCount?'대기 중':'실행 중 아님'))+'"></span>'
+    +   '<span class="st '+st+'" title="'+stTitle+'"></span>'
     +   '<div class="grow">'
     +     '<div class="cname" title="'+esc(p.name)+'">'+esc(p.name)+'</div>'
     +     '<div class="cpath" title="'+esc(p.cwd)+'">'+esc(p.cwd)+'</div>'
@@ -806,6 +835,7 @@ function projectCard(p, ss, emb){
     +       (p.gitBranch ? '<span class="tag br">⎇ '+esc(p.gitBranch)+'</span>' : '')
     +       '<span class="tag">세션 '+p.sessions.length+'</span>'
     +       (p.liveCount ? '<span class="tag run">● 실행 중 '+p.liveCount+'</span>' : '')
+    +       (p.waitCount ? '<span class="tag run">● 승인 대기 '+p.waitCount+'</span>' : '')
     +       (embN ? '<span class="tag emb">대시보드 '+embN+'</span>' : '')
     +       (p.favCount ? '<span class="tag">★ '+p.favCount+'</span>' : '')
     +       projectUsageTag(p)
@@ -817,7 +847,9 @@ function projectCard(p, ss, emb){
     + sessionGroup(p, claudeSs, emb, 'Claude Code', p.key+'|claude')
     + sessionGroup(p, codexSs, emb, 'Codex', p.key+'|codex')
     + '<div class="cfoot">'
-    +   '<button class="btn primary xs" data-act="continue" data-provider="claude" data-cwd="'+esc(p.cwd)+'" data-title="'+esc(p.name)+'" title="claude --continue">최근 이어하기</button>'
+    +   '<button class="btn primary xs" data-act="continue" data-provider="claude" data-cwd="'+esc(p.cwd)+'" data-title="'+esc(p.name)+'" title="claude --continue">최근 이어하기 (Claude)</button>'
+    +   '<button class="btn xs" data-act="continue" data-provider="codex" data-cwd="'+esc(p.cwd)+'" data-title="'+esc(p.name)+'"'
+    +     (codexOn ? '' : ' disabled')+' title="'+(codexOn ? 'codex resume --last' : 'codex 가 설치되지 않았습니다')+'">최근 이어하기 (Codex)</button>'
     +   '<button class="btn xs" data-act="new" data-provider="claude" data-cwd="'+esc(p.cwd)+'" data-title="'+esc(p.name)+'" title="claude">새 세션 (Claude)</button>'
     +   '<button class="btn xs" data-act="new" data-provider="codex" data-cwd="'+esc(p.cwd)+'" data-title="'+esc(p.name)+'"'
     +     (codexOn ? '' : ' disabled')+' title="'+(codexOn ? 'codex' : 'codex 가 설치되지 않았습니다')+'">새 세션 (Codex)</button>'
@@ -833,7 +865,7 @@ function sessionCard(s, emb){
   const vk = esc(s.provider)+'|'+esc(s.slug)+'|'+esc(s.id);
   return '<section class="card sc '+(s.live&&s.live.status==='busy'?'hasbusy':'')+' '+(p.exists?'':'missing')+'">'
     + '<div class="chead">'
-    +   '<span class="st '+(s.live?s.live.status:'')+'" title="'+esc(statusLabel(s.live)||'실행 중 아님')+'"></span>'
+    +   '<span class="st '+statusClass(s.live)+'" title="'+esc(statusLabel(s.live)||'실행 중 아님')+'"></span>'
     +   '<div class="grow">'
     +     '<div class="proj" title="'+esc(p.cwd)+'">'+esc(p.name)+(p.gitBranch?' · ⎇ '+esc(p.gitBranch):'')+'</div>'
     +     '<div class="cname" title="'+esc(s.title||'')+'">'+esc(s.title||'(제목 없음)')+'</div>'
@@ -922,8 +954,9 @@ function renderTermBar(){
     const parts = t.cwd.split(/[\\/]/).filter(Boolean);
     const proj = parts.length ? parts[parts.length-1] : t.cwd;
     const label = t.name || t.title || proj;
-    const dot = !t.alive ? '' : (t.status === 'busy' ? 'busy' : 'idle');
-    const sub = t.alive ? (t.status ? ' · '+(t.status==='busy'?'작업 중':'대기 중') : '') : ' · 종료됨';
+    // Codex 터미널도 이제 실행 상태를 받으므로 '승인 대기' 가 여기까지 온다
+    const dot = !t.alive ? '' : (t.status ? statusClass(t) : 'idle');
+    const sub = t.alive ? (t.status ? ' · '+statusLabel(t) : '') : ' · 종료됨';
     const onScreen = vis.indexOf(t.id) >= 0;
     return '<div class="tt '+(t.id===cur?'on':'')+' '+(t.alive?'':'dead')+' '+(onScreen?'shown':'')+'"'
       + ' data-goterm="'+esc(t.id)+'" title="'+(onScreen?'화면에 표시 중':'클릭하면 화면으로 가져옵니다')+'">'
@@ -967,7 +1000,7 @@ function syncPanelHeader(){
   $('#p-title').textContent = s.title || '(제목 없음)';
   const uSpan = usageSpan(s);
   $('#p-sub').innerHTML = esc(s.project.name)+' · '+ago(s.mtime)+' · '+s.sizeKB+'KB'
-    + (s.live ? ' · <b style="color:var(--busy)">● '+esc(statusLabel(s.live))+' (PID '+s.live.pid+')</b>' : '')
+    + (s.live ? ' · <b style="color:var('+statusColor(s.live)+')">● '+esc(statusLabel(s.live))+' (PID '+s.live.pid+')</b>' : '')
     + (uSpan ? ' · '+uSpan : '');
   $('#p-goterm').hidden = !e;
   $('#p-goterm').dataset.goterm = e ? e.id : '';
@@ -1001,7 +1034,9 @@ async function loadTranscript(keepScroll){
     const r = await fetch('/api/transcript?'+qs+'&limit='+openLimit, {cache:'no-store'});
     const j = await r.json();
     if (j.error) throw new Error(j.error);
-    const label = {user:'나', assistant:'Claude', thinking:'생각', tool:'도구'};
+    // 어시스턴트 이름은 provider 를 따른다 - Codex 대화를 'Claude' 로 부르면 안 된다
+    const label = {user:'나', assistant: openSess.provider === 'codex' ? 'Codex' : 'Claude',
+                   thinking:'생각', tool:'도구'};
     log.innerHTML = j.messages.map(function(m){
       return '<div class="m '+m.role+'"><div class="who">'+(label[m.role]||m.role)
         + (m.ts?'<span class="ts">'+stamp(new Date(m.ts).getTime())+'</span>':'')+'</div>'
@@ -1052,7 +1087,7 @@ document.addEventListener('click', async function(e){
     t.disabled = true;
     try{
       const j = await CC.live.install(mode, provider);
-      toast(who + '훅 ' + j.installed.length + '개 설치됨 · 백업: ' + j.backup.split(/[\\/]/).pop());
+      toast(who + '훅 ' + j.installed.length + '개 설치됨' + backupNote(j.backup));
       CC.harness.loadGraph($('#graphwrap'));
     }catch(err){ toast('설치 실패: ' + err.message, true); }
     t.disabled = false;
@@ -1065,7 +1100,7 @@ document.addEventListener('click', async function(e){
     try{
       const j = await CC.live.uninstall(provider);
       const n = Array.isArray(j.removed) ? j.removed.length : j.removed;
-      toast(who + '훅 ' + n + '개 제거됨 · 백업: ' + j.backup.split(/[\\/]/).pop());
+      toast(who + '훅 ' + n + '개 제거됨' + backupNote(j.backup));
       CC.harness.loadGraph($('#graphwrap'));
     }catch(err){ toast('제거 실패: ' + err.message, true); }
     t.disabled = false;

@@ -11,8 +11,9 @@ const { execFileSync, exec } = require('node:child_process');
 
 const TITLE_MAX = 200;
 
-// Codex 는 cwd 를 확장 길이 경로(\\?\D:\...)로 저장한다.
-// 벗기지 않으면 Claude 프로젝트 카드와 다른 키가 되어 카드가 둘로 갈린다.
+// Codex 는 cwd 와 rollout_path 를 확장 길이 경로(\\?\D:\...)로 저장하는 경우가 있다.
+// 벗기지 않으면 cwd 는 Claude 프로젝트 카드와 다른 키가 되어 카드가 둘로 갈리고,
+// rollout_path 는 isInsideSessions() 를 통과하지 못한다.
 function normalizeCwd(s) {
   let v = String(s || '');
   if (v.startsWith('\\\\?\\UNC\\')) return '\\\\' + v.slice(8);
@@ -51,6 +52,7 @@ function liveMap(dir) {
     const at = Number(j.at || 0);
     if (!Number.isFinite(at) || now - at > LIVE_MAX_AGE) continue;
     out.set(String(j.sessionId), {
+      provider: 'codex',   // /api/live 가 Claude 상태와 한 맵에 섞으므로 출처를 남긴다
       status: j.status === 'busy' || j.status === 'waiting' ? j.status : 'idle',
       cwd: j.cwd || null, pid: j.pid || null, at,
     });
@@ -119,7 +121,11 @@ function readThreads(dbPath) {
       mtime: Number(r.updated_at_ms) || Number(r.created_at_ms) || 0,
       branch: r.git_branch || null,
       cwd: normalizeCwd(r.cwd),
-      rolloutPath: r.rollout_path || null,
+      // cwd 와 마찬가지로 rollout_path 도 일부 행이 확장 길이 경로(\\?\C:\...)로
+      // 저장돼 있다 (실측 33행 중 4행). 그대로 두면 isInsideSessions() 가 path.relative
+      // 로 봤을 때 공통 조상이 없다고 판단해 거부하고, 그 세션은 대화 보기도 토큰
+      // 집계도 못 한다. 여기서 한 번 벗겨 아래로는 항상 평범한 경로만 흐르게 한다.
+      rolloutPath: r.rollout_path ? normalizeCwd(r.rollout_path) : null,
       threadSource: r.thread_source || null,
       parentId: parentOf(r.source),
       tokens: Number(r.tokens_used) || 0,
@@ -199,13 +205,42 @@ function rowToMsg(j) {
   return null;
 }
 
-function parseRollout(file, limit) {
+// rollout 은 실측 최대 9.4MB 인데, 대화 패널이 열려 있는 동안 5초마다 다시 읽고
+// 다시 파싱한다. Claude 쪽 transcript() 가 파일 끝 3MB(TRANSCRIPT_BYTES)만 읽는 것과
+// 같은 한계를 건다.
+//
+// mtime+size 캐시 대신 꼬리 자르기를 고른 이유: 이 재파싱이 문제가 되는 건 "살아있는"
+// 세션을 보고 있을 때인데, 그때는 5초마다 파일이 실제로 자라므로 mtime 캐시가 매번
+// 빗나가 아무것도 막아주지 못한다. 꼬리 자르기는 파일이 얼마나 크든 상한을 준다.
+const ROLLOUT_TAIL_BYTES = 3 * 1024 * 1024;
+
+function readTail(file, bytes) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(0, size - bytes);
+    const buf = Buffer.alloc(size - start);
+    if (buf.length) fs.readSync(fd, buf, 0, buf.length, start);
+    return { text: buf.toString('utf8'), partial: start > 0 };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+  }
+}
+
+// maxBytes 는 테스트에서 작은 값으로 꼬리 자르기를 확인하기 위한 선택적 오버라이드다.
+function parseRollout(file, limit, maxBytes) {
   if (!file || !fs.existsSync(file)) return { msgs: [], total: 0 };
-  let text;
-  try { text = fs.readFileSync(file, 'utf8'); } catch { return { msgs: [], total: 0 }; }
+  const tail = readTail(file, Number(maxBytes) > 0 ? Number(maxBytes) : ROLLOUT_TAIL_BYTES);
+  if (!tail) return { msgs: [], total: 0 };
+
+  const lines = tail.text.split('\n');
+  if (tail.partial) lines.shift();   // 중간부터 읽었으면 첫 줄은 잘려 있다
 
   const msgs = [];
-  for (const line of text.split('\n')) {
+  for (const line of lines) {
     if (!line) continue;
     let j;
     try { j = JSON.parse(line); } catch { continue; }

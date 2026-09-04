@@ -2,6 +2,18 @@
 // ~/.claude/projects 를 스캔해 세션 목록을, ~/.claude/sessions 를 읽어 실행 상태를 만들고,
 // 클릭하면 Windows Terminal 에 해당 프로젝트 폴더로 claude 를 띄운다.
 
+// node:sqlite 는 아직 실험 API 라 로드될 때마다 ExperimentalWarning 을 찍는다.
+// run.bat 로 띄우면 시작할 때마다 콘솔 첫 줄이 경고라 사용자가 오류로 읽는다.
+// --no-warnings 로 통째로 끄지 않는 이유: 진짜 봐야 할 deprecation 경고까지 사라진다.
+// Node 가 부트스트랩에서 붙여 둔 기본 출력 리스너를 떼고, SQLite 실험 경고만
+// 삼키는 우리 리스너를 대신 붙인다. codex.js(→ node:sqlite) 를 require 하기 전에
+// 실행돼야 하므로 반드시 이 파일 맨 위에 있어야 한다.
+process.removeAllListeners('warning');
+process.on('warning', w => {
+  if (w.name === 'ExperimentalWarning' && /SQLite/i.test(w.message || '')) return;
+  console.error(w.stack || String(w));
+});
+
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -182,6 +194,7 @@ function liveSessions() {
     if (!o || !o.sessionId || !o.pid) continue;
     if (!pidAlive(o.pid)) continue;
     bySession.set(o.sessionId, {
+      provider: 'claude',   // /api/live 에서 Codex 상태와 한 맵에 섞이므로 출처를 남긴다
       pid: o.pid,
       status: o.status || 'idle',          // busy | idle
       name: o.name || null,
@@ -297,6 +310,7 @@ function scan() {
     p.mtime = p.sessions[0] ? p.sessions[0].mtime : 0;
     p.liveCount = p.sessions.filter(s => s.live).length;
     p.busyCount = p.sessions.filter(s => s.live && s.live.status === 'busy').length;
+    p.waitCount = p.sessions.filter(s => s.live && s.live.status === 'waiting').length;
     p.favCount = p.sessions.filter(s => s.fav).length;
     p.pinned = pins.includes(p.key);
   }
@@ -512,28 +526,50 @@ const server = http.createServer(async (req, res) => {
     // 사용량은 Claude 쪽이 파일 전체 읽기라 비싸다. scan() 과 분리해 여기서만 계산한다.
     if (url.pathname === '/api/usage') {
       const out = { projects: {}, sessions: {} };
+      // Codex 는 rollout 파일 끝의 token_count 레코드를 읽어야 Claude 와 같은 정의의
+      // billable 이 나온다. rolloutPath 는 scan() 결과에 없으므로 여기서 한 번만 만든다
+      // (codex.sessions() 는 DB stamp 캐시라 값싸다).
+      const rollouts = new Map();
+      for (const s of codex.sessions()) if (s.rolloutPath) rollouts.set(s.id, s.rolloutPath);
+
       for (const p of scan()) {
-        let billable = 0, cacheRead = 0;
+        let billable = 0, cacheRead = 0, approx = false;
         for (const s of p.sessions) {
-          let u;
+          let u = null;
           if (s.provider === 'codex') {
-            u = Object.assign(usage.empty(), { billable: s.tokens || 0 });
+            const rp = rollouts.get(s.id);
+            if (rp && codex.isInsideSessions(rp)) u = usage.forCodexFile(rp);
+            // rollout 을 못 읽으면 threads.tokens_used 로 물러선다. 그 값은 캐시 입력을
+            // 포함한 총량이라 Claude 의 billable 과 같은 자로 잰 값이 아니다.
+            // approx 로 표시해서 UI 툴팁이 그 사실을 말하게 한다.
+            if (!u) u = Object.assign(usage.empty(), { billable: s.tokens || 0, approx: true });
           } else {
             u = usage.forClaudeFile(path.join(PROJECTS_DIR, s.slug, s.id + '.jsonl'));
           }
           out.sessions[s.provider + ':' + s.id] = u;
           billable += u.billable;
           cacheRead += u.cacheRead;
+          if (u.approx && u.billable) approx = true;
         }
-        out.projects[p.key] = { billable, cacheRead };
+        out.projects[p.key] = { billable, cacheRead, approx };
       }
       return json(res, 200, out);
     }
 
     // 실행 상태만 (jsonl 스캔 없음 → 수 ms). 짧은 주기로 폴링해도 부담 없다.
+    //
+    // Codex 상태도 반드시 같이 넣는다. 프론트의 pollLive() 는 4초마다 provider 를
+    // 가리지 않고 모든 세션에 대해 s.live = j.live[s.id] || null 을 하므로, 여기서
+    // Codex 를 빼면 훅이 만들어 준 실행 상태가 4초마다 지워지고 60초 전체 갱신까지
+    // 사라진 채로 남는다. liveMap() 은 readdirSync + 작은 JSON 몇 개라 DB 접근이 없다.
+    //
+    // 두 provider 가 한 id 공간을 공유하지 않지만(Claude UUID vs Codex thread id)
+    // 만에 하나 겹쳐도 남의 상태를 덮어쓰지 않게 이미 들어있는 키는 건너뛴다.
+    // 각 항목에 provider 를 실어 보내 프론트가 자기 provider 것만 붙이게 한다.
     if (url.pathname === '/api/live') {
       const live = {};
       for (const [id, v] of liveSessions()) live[id] = v;
+      for (const [id, v] of codex.liveMap()) if (!live[id]) live[id] = v;
       return json(res, 200, { live, at: Date.now() });
     }
 

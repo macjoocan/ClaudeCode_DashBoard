@@ -131,3 +131,48 @@ test('codex-hook.js 를 언급하지만 MARK 가 없는 남의 훅은 install/un
   assert.equal(j.hooks.PreToolUse.length, 1);
   assert.equal(j.hooks.PreToolUse[0].hooks[0].command, strangerCommand);
 });
+
+// --- 최종 리뷰 (전체 브랜치) ---
+
+// I3: 첫 설치는 hooks.json 이 없는 상태에서 일어난다. 그때 backup() 은 null 을
+// 돌려주는 게 맞고(백업할 원본이 없다), 프론트가 그 null 을 다뤄야 한다.
+test('install 은 기존 파일이 없으면 backup 이 null 이지만 성공한다', () => {
+  const { dir, mod } = fresh();
+  const r = mod.install();
+  assert.equal(r.ok, true);
+  assert.equal(r.backup, null);
+  assert.equal(r.installed.length, 12);
+  assert.ok(fs.existsSync(path.join(dir, 'hooks.json')));
+});
+
+// I3: hooks.json 이 없는데 uninstall() 이 {} 만 든 파일을 새로 만들면 안 된다.
+// 지울 것도 없는데 없던 사용자 상태를 만들어내는 건 되돌리기가 아니다.
+test('uninstall 은 hooks.json 이 없으면 파일을 만들지 않는다', () => {
+  const { dir, mod } = fresh();
+  const r = mod.uninstall();
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.removed, []);
+  assert.equal(r.backup, null);
+  assert.equal(fs.existsSync(path.join(dir, 'hooks.json')), false);
+});
+
+// I5: 관측을 끄면 실행 상태 디렉터리도 사라져야 한다. 남겨두면 파일을 지울
+// SessionEnd 훅이 방금 사라졌으므로 24시간 동안 '작업 중' 이 굳는다.
+test('uninstall 은 실행 상태 디렉터리(.cc-launcher-live)를 지운다', () => {
+  const { dir, mod } = fresh();
+  mod.install();
+  const liveDir = path.join(dir, '.cc-launcher-live');
+  fs.mkdirSync(liveDir, { recursive: true });
+  fs.writeFileSync(path.join(liveDir, 'aaa.json'), JSON.stringify({
+    sessionId: 'aaa', status: 'busy', at: Date.now() }), 'utf8');
+  assert.equal(mod.LIVE_DIR, liveDir);
+
+  mod.uninstall();
+  assert.equal(fs.existsSync(liveDir), false);
+});
+
+test('uninstall 은 실행 상태 디렉터리가 없어도 던지지 않는다', () => {
+  const { mod } = fresh();
+  mod.install();
+  assert.doesNotThrow(() => mod.uninstall());
+});

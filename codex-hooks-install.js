@@ -9,6 +9,11 @@ const path = require('node:path');
 
 const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
 const HOOKS_FILE = path.join(CODEX_HOME, 'hooks.json');
+// codex-hook.js 가 실행 상태를 쓰는 디렉터리. codex.js 의 LIVE_DIR 과 같은 곳이지만
+// 여기서 다시 계산한다 - codex.js 를 require 하면 그쪽 CODEX_HOME 이 먼저 로드된
+// 시점의 값으로 굳어, 테스트처럼 CODEX_HOME 을 바꿔가며 이 모듈만 다시 require 하는
+// 경우 엉뚱한 디렉터리를 가리킨다 (codex-hook.js 도 같은 이유로 따로 계산한다).
+const LIVE_DIR = path.join(CODEX_HOME, '.cc-launcher-live');
 const SCRIPT = path.join(__dirname, 'codex-hook.js');
 const DEFAULT_URL = 'http://127.0.0.1:7788/api/hook';
 const MARK = 'cc-launcher';   // 우리 항목만 골라내는 표시. isOurs() 가 이 값과 스크립트 경로를 함께 본다.
@@ -126,7 +131,21 @@ function install(url) {
   return { ok: true, installed: EVENTS.slice().sort(), backup: bak, bytes, file: HOOKS_FILE };
 }
 
+// 관측을 끄면 실행 상태 파일도 같이 치운다. 파일을 지우는 건 SessionEnd 훅인데
+// 그 훅이 방금 사라졌으므로, 남겨두면 진행 중이던 세션이 LIVE_MAX_AGE(24시간)
+// 동안 계속 '작업 중' 으로 보인다 - 그걸 지울 수단이 더는 없다.
+function clearLive() {
+  try { fs.rmSync(LIVE_DIR, { recursive: true, force: true }); } catch {}
+}
+
 function uninstall() {
+  clearLive();
+  // hooks.json 이 아예 없으면 아무것도 하지 않는다. 예전에는 그대로 진행해
+  // writeSafely 가 {} 만 든 hooks.json 을 "새로 만들었다" - 지울 것도 없는데
+  // 없던 사용자 파일을 만들어내는 건 되돌리기가 아니다.
+  if (!fs.existsSync(HOOKS_FILE)) {
+    return { ok: true, removed: [], backup: null, bytes: 0, file: HOOKS_FILE };
+  }
   const { text, data } = readFile();
   const bak = backup(text);
   const removed = [];
@@ -139,4 +158,4 @@ function uninstall() {
   return { ok: true, removed: removed.sort(), backup: bak, bytes };
 }
 
-module.exports = { status, install, uninstall, HOOKS_FILE, EVENTS };
+module.exports = { status, install, uninstall, HOOKS_FILE, LIVE_DIR, EVENTS };

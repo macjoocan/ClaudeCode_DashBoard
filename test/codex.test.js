@@ -203,6 +203,36 @@ test('parseRollout 은 limit 만큼 뒤에서 자른다', () => {
   assert.equal(out.total, 50);
 });
 
+// 최종 리뷰(승격된 보류 항목): rollout 은 실측 최대 9.4MB 인데 대화 패널이 열려
+// 있는 동안 5초마다 통째로 다시 읽고 다시 파싱했다. Claude 쪽 transcript() 처럼
+// 파일 끝만 읽도록 상한을 건다.
+test('parseRollout 은 파일 끝만 읽고 잘린 첫 줄을 버린다', () => {
+  const lines = [];
+  for (let i = 0; i < 50; i++) {
+    lines.push({ timestamp: '2026-08-17T04:34:30.965Z', type: 'event_msg',
+                 payload: { type: 'user_message', message: '메시지 ' + i } });
+  }
+  const p = writeRollout(lines);
+  const full = codex.parseRollout(p, 100);
+  const tail = codex.parseRollout(p, 100, 300);   // 300 바이트만 읽는다
+
+  assert.equal(full.total, 50);
+  assert.ok(tail.total > 0 && tail.total < full.total, '꼬리만 읽어 메시지 수가 줄어야 한다');
+  // 마지막 메시지는 항상 살아 있고, 잘린 첫 줄 때문에 깨진 항목이 섞이면 안 된다
+  assert.equal(tail.msgs[tail.msgs.length - 1].text, '메시지 49');
+  assert.ok(tail.msgs.every(m => /^메시지 \d+$/.test(m.text)), '잘린 줄이 섞이면 안 된다');
+});
+
+test('parseRollout 은 상한보다 작은 파일은 그대로 다 읽는다', () => {
+  const p = writeRollout([
+    { timestamp: '2026-08-17T04:34:30.965Z', type: 'event_msg',
+      payload: { type: 'user_message', message: '하나' } },
+  ]);
+  const out = codex.parseRollout(p, 40, 1024 * 1024);
+  assert.equal(out.total, 1);
+  assert.equal(out.msgs[0].text, '하나');
+});
+
 test('parseRollout 은 깨진 줄을 건너뛴다', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-roll-'));
   const p = path.join(dir, 'r.jsonl');
@@ -243,6 +273,8 @@ test('liveMap 은 상태 파일을 읽는다', () => {
     sessionId: 'aaa-111', status: 'busy', cwd: 'D:\\x', pid: 123, at: Date.now() }), 'utf8');
   const m = codex.liveMap(dir);
   assert.equal(m.get('aaa-111').status, 'busy');
+  // /api/live 가 Claude 상태와 한 맵에 담으므로 출처가 실려 있어야 한다
+  assert.equal(m.get('aaa-111').provider, 'codex');
 });
 
 test('liveMap 은 오래된 파일을 버린다', () => {
