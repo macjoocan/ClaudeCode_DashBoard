@@ -4,7 +4,10 @@
   "private": true,
   "description": "Claude Code 세션 런처 - 한 페이지에서 모든 프로젝트의 세션을 보고 실행한다",
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  },
   "dependencies": {
     "node-pty": "^1.1.0",
     "ws": "^8.18.0"
