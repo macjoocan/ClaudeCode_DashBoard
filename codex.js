@@ -114,8 +114,8 @@ function stamp(dbPath) {
   let handle;
   try { handle = openReadOnly(file); } catch { return ''; }
   try {
-    const r = handle.db.prepare('select count(*) n, max(updated_at_ms) m from threads').get();
-    return `${r.n}:${r.m || 0}`;
+    const r = handle.db.prepare('select count(*) n, max(updated_at_ms) m, sum(archived) a from threads').get();
+    return `${r.n}:${r.m || 0}:${r.a || 0}`;
   } catch {
     return '';
   } finally {

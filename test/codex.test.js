@@ -122,11 +122,24 @@ test('openReadOnly 는 폴백까지 이중으로 실패해도 temp 디렉터리�
   }
 });
 
-test('stamp 는 행 수와 최신 updated_at_ms 를 합친 문자열', () => {
+test('stamp 는 행 수와 최신 updated_at_ms 와 archived 합을 합친 문자열', () => {
   const p = makeFixtureDb();
-  assert.equal(codex.stamp(p), '3:3000');    // archived 포함 3행, 최대 3000
+  assert.equal(codex.stamp(p), '3:3000:1');    // archived 포함 3행, 최대 3000, archived 합 1(ccc-333)
 });
 
 test('stamp 는 DB 가 없으면 빈 문자열', () => {
   assert.equal(codex.stamp('C:\\없는\\x.sqlite'), '');
+});
+
+// updated_at_ms 를 건드리지 않고 archived 만 뒤집는 경우, 이전 stamp(count+max)는
+// 값이 그대로라 캐시가 무효화되지 않았다(사전 확인 스크립트로 재현: 수정 전에는
+// before === after === '3:3000' 이었음). archived 합을 stamp 에 넣어 이 구멍을 막는다.
+test('stamp 는 updated_at_ms 변화 없이 archived 만 바뀌어도 달라진다', () => {
+  const p = makeFixtureDb();
+  const before = codex.stamp(p);
+  const wdb = new DatabaseSync(p);
+  wdb.exec("update threads set archived = 1 where id = 'aaa-111'");
+  wdb.close();
+  const after = codex.stamp(p);
+  assert.notEqual(before, after);
 });
