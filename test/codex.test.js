@@ -302,3 +302,28 @@ test('parseDoctor 는 쓰레기 입력에 ok:false', () => {
   assert.equal(codex.parseDoctor({}).ok, false);
   assert.equal(codex.parseDoctor({ checks: 'x' }).ok, false);
 });
+
+// 회귀 방지: doctor() 는 codex 실행 파일 경로를 큰따옴표로 감싸 실행해야 한다.
+// 경로 중간에 공백이 있으면(예: 사용자 이름이 "John Smith") 따옴표 없이 넘길 경우
+// cmd.exe 가 공백에서 인자를 다시 쪼개 "내부 또는 외부 명령이 아닙니다"로 조용히
+// 실패한다(1차 수정에서 실측으로 발견). 실제 codex 를 부르지 않고, 공백이 든
+// 임시 디렉터리에 가짜 .cmd 를 만들어 doctor() 의 두 번째 인자(bin 오버라이드)로
+// 넘겨 검증한다.
+test('doctor 는 경로에 공백이 있는 codex 실행 파일도 부른다 (cmd.exe 따옴표 회귀 방지)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl codex space '));
+  const bin = path.join(dir, 'fake codex.cmd');
+  const fakeJson = '{"schemaVersion":1,"overallStatus":"ok","codexVersion":"9.9.9",'
+    + '"checks":{"x":{"id":"x","category":"c","status":"ok","summary":"s","details":{}}}}';
+  fs.writeFileSync(bin, '@echo off\r\necho ' + fakeJson + '\r\n');
+  try {
+    const report = await new Promise((resolve, reject) => {
+      codex.doctor((err, r) => err ? reject(err) : resolve(r), bin);
+    });
+    assert.equal(report.ok, true);
+    assert.equal(report.version, '9.9.9');
+    assert.equal(report.checks.length, 1);
+    assert.equal(report.checks[0].id, 'x');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

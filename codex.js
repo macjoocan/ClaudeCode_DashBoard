@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
-const { execFileSync, execFile } = require('node:child_process');
+const { execFileSync, exec } = require('node:child_process');
 
 const TITLE_MAX = 200;
 
@@ -269,14 +269,26 @@ function parseDoctor(json) {
 //
 // findCodexBin() 은 npm 전역 설치의 codex.cmd 를 우선 찾는데, execFile 은 (spawn 과
 // 마찬가지로) 셸을 거치지 않아 .cmd/.bat 를 직접 실행하지 못하고 Windows 에서
-// "spawn EINVAL" 로 죽는다(실측). shell:true 는 인자를 이스케이프 없이 그냥 이어붙여
-// 넘기므로(Node 가 경고까지 띄운다) 경로에 공백이 있으면 깨질 수 있다. 대신
-// cmd.exe /c 로 감싸 배열 인자를 그대로 넘긴다 - server.js 의 다른 cmd.exe 스폰과
-// 같은 방식이고, Node 가 배열 인자를 CreateProcess 용으로 알아서 이스케이프해 준다.
-function doctor(cb) {
-  const bin = findCodexBin();
+// "spawn EINVAL" 로 죽는다(실측).
+//
+// 1차 수정으로 execFile('cmd.exe', ['/d','/s','/c', bin, ...]) 를 썼으나(배열 인자를
+// Node 가 알아서 이스케이프해 줄 거라 가정) 실측에서 구멍이 발견됐다: bin 경로에
+// 공백이 있으면(예: 사용자 이름이 "John Smith") cmd.exe 가 /s 스위치 아래에서 인자를
+// 자기 방식대로 다시 토큰화해 "'D:\tmp\space' 은(는) 내부 또는 외부 명령이 아닙니다"
+// 로 조용히 실패한다 - Node 가 CreateProcess 용으로 인자를 개별적으로 이스케이프해도
+// cmd.exe 자체의 /c 파싱 규칙(따옴표 벗기기)까지 맞춰주지는 않기 때문이다.
+// exec() 로 바꾸고 경로를 우리가 직접 큰따옴표로 감싸 하나의 문자열로 넘기면
+// cmd.exe 가 항상 "따옴표로 감싼 파일명" 규칙을 그대로 따라 안전하다(실측 검증:
+// 공백 있는 가짜 .cmd 와 공백 없는 실제 codex.cmd 양쪽 모두 통과).
+// bin 은 findCodexBin() 결과(신뢰 가능, PATH 스캔 결과)이고 인자도 리터럴이라
+// 셸 인젝션 우려는 없다 - 따옴표는 순전히 파싱 정확성을 위한 것이다.
+//
+// bin 매개변수는 테스트에서 실제 codex 를 부르지 않고 공백 경로 픽스처로 검증할 수
+// 있게 하는 선택적 오버라이드다(readThreads/stamp 가 dbPath 를 받는 것과 같은 패턴).
+function doctor(cb, bin) {
+  bin = bin || findCodexBin();
   if (!bin) return cb(new Error('codex 를 찾을 수 없습니다'));
-  execFile('cmd.exe', ['/d', '/s', '/c', bin, 'doctor', '--json'],
+  exec('"' + bin + '" doctor --json',
     { timeout: 60000, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
     (err, stdout) => {
       if (err && !stdout) return cb(err);
