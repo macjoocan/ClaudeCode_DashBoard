@@ -121,3 +121,12 @@ test('openReadOnly 는 폴백까지 이중으로 실패해도 temp 디렉터리�
     fs.rmSync(fakeDbDir, { recursive: true, force: true });
   }
 });
+
+test('stamp 는 행 수와 최신 updated_at_ms 를 합친 문자열', () => {
+  const p = makeFixtureDb();
+  assert.equal(codex.stamp(p), '3:3000');    // archived 포함 3행, 최대 3000
+});
+
+test('stamp 는 DB 가 없으면 빈 문자열', () => {
+  assert.equal(codex.stamp('C:\\없는\\x.sqlite'), '');
+});

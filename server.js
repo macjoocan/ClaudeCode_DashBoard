@@ -13,6 +13,7 @@ const harness = require('./harness');
 const events = require('./events');
 const hooksInstall = require('./hooks-install');
 const cfgWrite = require('./config-write');
+const codex = require('./codex.js');
 
 const HOOK_URL = `http://${'127.0.0.1'}:${Number(process.env.CC_LAUNCHER_PORT || 7788)}/api/hook`;
 
@@ -238,6 +239,7 @@ function scan() {
       if (!p.gitBranch && info.gitBranch) p.gitBranch = info.gitBranch;
       p.sessions.push({
         id, slug: d.name,
+        provider: 'claude',
         mtime: stat.mtimeMs,
         sizeKB: Math.round(stat.size / 1024),
         branch: info.gitBranch,
@@ -250,6 +252,34 @@ function scan() {
         subagents: info.subagents,
       });
     }
+  }
+
+  // Codex 세션을 같은 프로젝트 맵에 병합한다. 키가 cwd 소문자라
+  // 같은 폴더면 Claude 카드와 자연히 합쳐진다.
+  for (const s of codex.sessions()) {
+    if (!s.cwd) continue;
+    const key = s.cwd.toLowerCase();
+    if (!projects.has(key)) {
+      projects.set(key, {
+        key, cwd: s.cwd, name: path.basename(s.cwd) || s.cwd,
+        exists: fs.existsSync(s.cwd),
+        gitBranch: s.branch, sessions: [],
+      });
+    }
+    const p = projects.get(key);
+    if (!p.gitBranch && s.branch) p.gitBranch = s.branch;
+    let sizeKB = 0;
+    try { sizeKB = Math.round(fs.statSync(s.rolloutPath).size / 1024); } catch {}
+    p.sessions.push({
+      id: s.id, slug: null, provider: 'codex',
+      mtime: s.mtime, sizeKB,
+      branch: s.branch, version: null,
+      title: s.title, firstPrompt: s.firstPrompt, last: s.last,
+      live: null,
+      fav: favs.has('codex:' + s.id),
+      subagents: null,
+      threadSource: s.threadSource, parentId: s.parentId,
+    });
   }
 
   const pins = loadPins();

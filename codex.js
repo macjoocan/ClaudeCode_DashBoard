@@ -106,4 +106,32 @@ function readThreads(dbPath) {
   }
 }
 
-module.exports = { normalizeCwd, safeTitle, readThreads, TITLE_MAX, CODEX_HOME, STATE_DB };
+// 파일 mtime 대신 DB 내용으로 캐시를 무효화한다.
+// sqlite 는 WAL 때문에 mtime 이 안 바뀔 수 있다.
+function stamp(dbPath) {
+  const file = dbPath || STATE_DB;
+  if (!fs.existsSync(file)) return '';
+  let handle;
+  try { handle = openReadOnly(file); } catch { return ''; }
+  try {
+    const r = handle.db.prepare('select count(*) n, max(updated_at_ms) m from threads').get();
+    return `${r.n}:${r.m || 0}`;
+  } catch {
+    return '';
+  } finally {
+    try { handle.db.close(); } catch {}
+    if (handle.tmp) { try { fs.rmSync(path.dirname(handle.tmp), { recursive: true, force: true }); } catch {} }
+  }
+}
+
+let _cache = { stamp: null, rows: [] };
+
+function sessions() {
+  const s = stamp();
+  if (s && s === _cache.stamp) return _cache.rows;
+  const rows = readThreads();
+  _cache = { stamp: s, rows };
+  return rows;
+}
+
+module.exports = { normalizeCwd, safeTitle, readThreads, TITLE_MAX, CODEX_HOME, STATE_DB, sessions, stamp };
