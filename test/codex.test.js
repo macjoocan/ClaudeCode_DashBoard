@@ -211,3 +211,20 @@ test('parseRollout 은 깨진 줄을 건너뛴다', () => {
 test('parseRollout 은 없는 파일에 빈 결과', () => {
   assert.deepEqual(codex.parseRollout('C:\\없는\\r.jsonl', 40), { msgs: [], total: 0 });
 });
+
+// ------------------------------------------------------- isInsideSessions (경로 탈출 차단)
+
+test('isInsideSessions 은 sessions 로 시작하지만 실제로는 형제 디렉터리인 경로를 막는다', () => {
+  const evil = path.join(codex.CODEX_HOME, 'sessions-evil', 'x.jsonl');
+  assert.equal(codex.isInsideSessions(evil), false);
+});
+
+test('isInsideSessions 은 sessions 하위 정상 경로를 허용한다', () => {
+  const ok = path.join(codex.CODEX_HOME, 'sessions', '2026', '08', '17', 'rollout-x.jsonl');
+  assert.equal(codex.isInsideSessions(ok), true);
+});
+
+test('isInsideSessions 은 .. 로 상위를 탈출하는 경로를 막는다', () => {
+  const traversal = path.join(codex.CODEX_HOME, 'sessions', '..', 'evil.jsonl');
+  assert.equal(codex.isInsideSessions(traversal), false);
+});

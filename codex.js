@@ -191,18 +191,29 @@ function parseRollout(file, limit) {
   return { msgs: msgs.slice(-n), total: msgs.length };
 }
 
+// 경로 탈출 차단: rollout 은 반드시 ~/.codex/sessions 하위여야 한다.
+// path.resolve 뒤에 startsWith 만 쓰면 문자열 접두사 비교라 "sessions-evil" 같이
+// 이름만 같은 접두사로 시작하는 형제 디렉터리도 통과해버린다(구분자 경계를 안 본다).
+// path.relative 로 실제 트리 관계를 본다: 결과가 '..' 이거나 '..' + 구분자로
+// 시작하면 상위로 나간 것이고, 절대경로 그대로면(윈도우에서 드라이브가 다르면
+// relative 가 target 을 그대로 돌려준다) 공통 조상이 없다는 뜻이다.
+// 둘 다 아니면 root 하위다. root 자신(빈 문자열)은 파일이 아니므로 제외한다.
+function isInsideSessions(p) {
+  const root = path.resolve(CODEX_HOME, 'sessions');
+  const target = path.resolve(p || '');
+  const rel = path.relative(root, target);
+  return rel !== '' && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
+}
+
 function transcript(sessionId, limit) {
   // sessions() 를 쓴다 - readThreads() 는 매번 DB 를 다시 연다
   const row = sessions().find(r => r.id === sessionId);
   if (!row) throw new Error('세션을 찾을 수 없습니다');
-  // 경로 탈출 차단: rollout 은 반드시 ~/.codex/sessions 하위여야 한다
-  const sessionsDir = path.join(CODEX_HOME, 'sessions');
-  const real = path.resolve(row.rolloutPath || '');
-  if (!real.startsWith(path.resolve(sessionsDir))) throw new Error('세션 파일 경로가 올바르지 않습니다');
-  return parseRollout(real, limit);
+  if (!isInsideSessions(row.rolloutPath)) throw new Error('세션 파일 경로가 올바르지 않습니다');
+  return parseRollout(path.resolve(row.rolloutPath || ''), limit);
 }
 
 module.exports = {
   normalizeCwd, safeTitle, readThreads, TITLE_MAX, CODEX_HOME, STATE_DB, sessions, stamp,
-  codexArgs, findCodexBin, parseRollout, transcript,
+  codexArgs, findCodexBin, parseRollout, transcript, isInsideSessions,
 };
