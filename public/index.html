@@ -844,6 +844,7 @@ function sessionCard(s, emb){
     +       '<span class="tag">'+s.sizeKB+'KB</span>'
     +       (s.provider === 'codex' ? '<span class="tag">Codex</span>' : '')
     +       (p.exists ? '' : '<span class="tag err">폴더 없음</span>')
+    +       usageSpan(s)
     +     '</div>'
     +   '</div>'
     +   '<button class="icon '+(s.fav?'on':'')+'" data-fav="'+vk+'" title="즐겨찾기">'+(s.fav?'★':'☆')+'</button>'
@@ -964,8 +965,10 @@ function syncPanelHeader(){
   openSess = s;
   const e = embeddedBySession().get(s.id);
   $('#p-title').textContent = s.title || '(제목 없음)';
+  const uSpan = usageSpan(s);
   $('#p-sub').innerHTML = esc(s.project.name)+' · '+ago(s.mtime)+' · '+s.sizeKB+'KB'
-    + (s.live ? ' · <b style="color:var(--busy)">● '+esc(statusLabel(s.live))+' (PID '+s.live.pid+')</b>' : '');
+    + (s.live ? ' · <b style="color:var(--busy)">● '+esc(statusLabel(s.live))+' (PID '+s.live.pid+')</b>' : '')
+    + (uSpan ? ' · '+uSpan : '');
   $('#p-goterm').hidden = !e;
   $('#p-goterm').dataset.goterm = e ? e.id : '';
   $('#p-focus').hidden = !s.live || !!e;
