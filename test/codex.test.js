@@ -228,3 +228,34 @@ test('isInsideSessions 은 .. 로 상위를 탈출하는 경로를 막는다', (
   const traversal = path.join(codex.CODEX_HOME, 'sessions', '..', 'evil.jsonl');
   assert.equal(codex.isInsideSessions(traversal), false);
 });
+
+// ------------------------------------------------------- liveMap (실행 상태 파일)
+
+test('liveMap 은 상태 파일을 읽는다', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-live-'));
+  fs.writeFileSync(path.join(dir, 'aaa-111.json'), JSON.stringify({
+    sessionId: 'aaa-111', status: 'busy', cwd: 'D:\\x', pid: 123, at: Date.now() }), 'utf8');
+  const m = codex.liveMap(dir);
+  assert.equal(m.get('aaa-111').status, 'busy');
+});
+
+test('liveMap 은 오래된 파일을 버린다', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-live-'));
+  fs.writeFileSync(path.join(dir, 'old.json'), JSON.stringify({
+    sessionId: 'old', status: 'busy', at: Date.now() - 25 * 60 * 60 * 1000 }), 'utf8');
+  assert.equal(codex.liveMap(dir).size, 0);
+});
+
+test('liveMap 은 깨진 파일을 건너뛴다', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-live-'));
+  fs.writeFileSync(path.join(dir, 'bad.json'), '{깨짐', 'utf8');
+  fs.writeFileSync(path.join(dir, 'good.json'), JSON.stringify({
+    sessionId: 'good', status: 'idle', at: Date.now() }), 'utf8');
+  const m = codex.liveMap(dir);
+  assert.equal(m.size, 1);
+  assert.ok(m.has('good'));
+});
+
+test('liveMap 은 디렉터리가 없으면 빈 Map', () => {
+  assert.equal(codex.liveMap('C:\\없는\\디렉터리').size, 0);
+});

@@ -33,6 +33,29 @@ function safeTitle(...candidates) {
 
 const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
 const STATE_DB = path.join(CODEX_HOME, 'state_5.sqlite');
+const LIVE_DIR = path.join(CODEX_HOME, '.cc-launcher-live');
+const LIVE_MAX_AGE = 24 * 60 * 60 * 1000;   // 하루 넘은 상태 파일은 죽은 것으로 본다
+
+// Codex 에는 ~/.claude/sessions/<pid>.json 대응물이 없다.
+// 우리 훅(codex-hook.js)이 쓴 파일을 읽는다.
+function liveMap(dir) {
+  const d = dir || LIVE_DIR;
+  const out = new Map();
+  let files = [];
+  try { files = fs.readdirSync(d).filter(f => f.endsWith('.json')); } catch { return out; }
+  const now = Date.now();
+  for (const f of files) {
+    let j;
+    try { j = JSON.parse(fs.readFileSync(path.join(d, f), 'utf8')); } catch { continue; }
+    if (!j || !j.sessionId) continue;
+    if (now - Number(j.at || 0) > LIVE_MAX_AGE) continue;
+    out.set(String(j.sessionId), {
+      status: j.status === 'busy' || j.status === 'waiting' ? j.status : 'idle',
+      cwd: j.cwd || null, pid: j.pid || null, at: j.at || 0,
+    });
+  }
+  return out;
+}
 
 const SELECT = `
   select id, rollout_path, cwd, title, first_user_message, preview,
@@ -215,5 +238,5 @@ function transcript(sessionId, limit) {
 
 module.exports = {
   normalizeCwd, safeTitle, readThreads, TITLE_MAX, CODEX_HOME, STATE_DB, sessions, stamp,
-  codexArgs, findCodexBin, parseRollout, transcript, isInsideSessions,
+  codexArgs, findCodexBin, parseRollout, transcript, isInsideSessions, liveMap, LIVE_DIR,
 };

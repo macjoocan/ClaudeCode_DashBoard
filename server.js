@@ -258,6 +258,7 @@ function scan() {
 
   // Codex 세션을 같은 프로젝트 맵에 병합한다. 키가 cwd 소문자라
   // 같은 폴더면 Claude 카드와 자연히 합쳐진다.
+  const codexLive = codex.liveMap();
   for (const s of codex.sessions()) {
     if (!s.cwd) continue;
     const key = s.cwd.toLowerCase();
@@ -277,7 +278,7 @@ function scan() {
       mtime: s.mtime, sizeKB,
       branch: s.branch, version: null,
       title: s.title, firstPrompt: s.firstPrompt, last: s.last,
-      live: null,
+      live: codexLive.get(s.id) || null,
       fav: favs.has('codex:' + s.id),
       subagents: null,
       threadSource: s.threadSource, parentId: s.parentId,
