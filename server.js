@@ -639,6 +639,15 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/mcp/list') {
       return json(res, 200, await cfgWrite.mcpList(url.searchParams.get('force') === '1'));
     }
+    // Codex 구성 읽기 (읽기 전용). codex doctor 가 네트워크 확인까지 해서 수 초가 걸리므로
+    // 구성 탭 로딩에 끼워 넣지 않고, 프론트가 버튼을 눌렀을 때만 호출한다.
+    if (url.pathname === '/api/cfg/codex') {
+      return new Promise(resolve => {
+        codex.doctor((err, report) => {
+          resolve(json(res, 200, err ? { ok: false, error: String(err.message) } : report));
+        });
+      });
+    }
 
     if (url.pathname === '/api/cfg' && req.method === 'POST') {
       const b = await readBody(req);

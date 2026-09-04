@@ -7,6 +7,10 @@
   var CFG = null, GRAPH = null, GRAPH_HOST = null;
   var EDGES = {};        // 실시간 신호를 쏠 엣지 인덱스
 
+  // Codex 구성(codex doctor 결과) - 읽기 전용, 버튼을 눌러야 채워진다
+  var CODEX_DOCTOR = null;
+  var codexLoading = false;
+
   function num(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
 
   // ------------------------------------------------------------- 구성 탭
@@ -36,6 +40,80 @@
   function chips(list, cls) {
     if (!list || !list.length) return '<span class="dimtxt">없음</span>';
     return list.map(function (x) { return '<span class="chip ' + (cls || '') + '">' + esc(x) + '</span>'; }).join('');
+  }
+
+  // ------------------------------------------------------------- Codex 구성 (읽기 전용)
+  //
+  // codex doctor --json 은 네트워크 확인까지 해서 수 초가 걸린다. 구성 탭을 열 때
+  // 자동으로 부르지 않고, 이 섹션의 "Codex 설정 읽기" 버튼을 눌렀을 때만 부른다
+  // (Claude 쪽 MCP 연결 상태 확인과 같은 방침 - config-edit.js 의 mcpCheckBar 참고).
+
+  // codex doctor 의 상태 문자열을 기존 MCP 배지 색(.mh)에 얹는다 (새 CSS 없이 재사용)
+  function codexStatusCls(s) {
+    s = String(s || '').toLowerCase();
+    if (s === 'ok') return 'ok';
+    if (s === 'fail' || s === 'error') return 'fail';
+    if (s === 'warning' || s === 'warn') return 'auth';   // .mh.auth 가 경고색(주황)
+    return 'unk';
+  }
+
+  function codexBody() {
+    var bar = '<div class="addrow" style="align-items:center">'
+      + '<button class="btn xs" id="codexcheck"' + (codexLoading ? ' disabled' : '') + '>'
+      +   (codexLoading ? '확인 중… (최대 60초)' : (CODEX_DOCTOR ? '다시 확인' : 'Codex 설정 읽기'))
+      + '</button>'
+      + '<span class="dimtxt">' + (CODEX_DOCTOR && CODEX_DOCTOR.ok
+          ? 'codex ' + esc(CODEX_DOCTOR.version || '?') + ' · 전체 상태 ' + esc(CODEX_DOCTOR.status || '?')
+          : '<code>codex doctor --json</code> 로 실제 설정을 확인합니다 (네트워크 확인 포함, 최대 60초)')
+      + '</span></div>';
+
+    if (!CODEX_DOCTOR) return bar;
+
+    if (!CODEX_DOCTOR.ok) {
+      return bar + '<div class="empty">' + esc(CODEX_DOCTOR.error || '설정을 읽지 못했습니다') + '</div>';
+    }
+
+    var list = '<div class="mcplist">' + CODEX_DOCTOR.checks.map(function (c) {
+      var details = c.details || {};
+      var dkeys = Object.keys(details);
+      return '<div class="mcp"><div class="mn">'
+        + '<span class="mh ' + codexStatusCls(c.status) + '">' + esc(c.status) + '</span>'
+        + esc(c.summary || c.id)
+        + '<span class="grow"></span><span class="mt">' + esc(c.category) + '</span></div>'
+        + (dkeys.length ? dkeys.map(function (k) { return kv(k, details[k]); }).join('')
+                        : '<span class="dimtxt">세부 정보 없음</span>')
+        + '</div>';
+    }).join('') + '</div>';
+
+    return bar + list;
+  }
+
+  function codexSection() {
+    var count = (CODEX_DOCTOR && CODEX_DOCTOR.ok) ? CODEX_DOCTOR.checks.length : null;
+    return sec('codex', 'Codex', count, codexBody(), openSecs.codex);
+  }
+
+  // 버튼 클릭 -> /api/cfg/codex 호출. 로딩 표시는 전체를 다시 그리지 않고
+  // 버튼만 직접 바꾼다(느린 호출인데 구성 전체를 다시 불러올 필요는 없다).
+  function loadCodexDoctor(host) {
+    if (codexLoading) return;
+    codexLoading = true;
+    var btn = document.getElementById('codexcheck');
+    if (btn) { btn.disabled = true; btn.textContent = '확인 중… (최대 60초)'; }
+    fetch('/api/cfg/codex', { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        codexLoading = false;
+        CODEX_DOCTOR = j;
+        openSecs.codex = true;
+        renderConfig(host);
+      })
+      .catch(function (e) {
+        codexLoading = false;
+        CODEX_DOCTOR = { ok: false, error: e.message };
+        openSecs.codex = true;
+        renderConfig(host);
+      });
   }
 
   // 다시 그려도 펼쳐둔 섹션이 닫히지 않게 열림 상태를 기억한다
@@ -160,6 +238,9 @@
     if (CE) mbody += CE.mcpCheckBar() + CE.mcpAddForm();
     out.push(sec('mcp', 'MCP 서버', c.global.mcpServers.length, mbody, openSecs.mcp));
 
+    // ---- Codex (읽기 전용 - codex doctor 기반, 버튼을 눌러야 불러온다)
+    out.push(codexSection());
+
     // ---- 플러그인
     var pbody = c.plugins.map(function (p) {
       return '<div class="plug ' + (p.enabled === false ? 'off' : '') + '">'
@@ -250,6 +331,11 @@
         el.style.display = el.textContent.toLowerCase().indexOf(q) >= 0 ? '' : 'none';
       });
     });
+
+    // Codex 설정 읽기 버튼 - 전역 클릭 위임(index.html)을 타지 않고 여기서 직접 붙인다
+    // (이 섹션이 harness-ui.js 안에서 완결되도록 - config-edit.js/index.html 을 건드리지 않는다)
+    var cbtn = document.getElementById('codexcheck');
+    if (cbtn) cbtn.addEventListener('click', function () { loadCodexDoctor(host); });
   }
 
   // ------------------------------------------------------------- 그래프 탭

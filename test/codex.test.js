@@ -266,3 +266,39 @@ test('liveMap 은 at 값이 깨진(비숫자) 문자열이면 최대로 오래�
     sessionId: 'corrupt-at', status: 'busy', at: 'not-a-number' }), 'utf8');
   assert.equal(codex.liveMap(dir).size, 0);
 });
+
+// ------------------------------------------------------- parseDoctor (codex doctor --json)
+
+const DOCTOR_FIXTURE = {
+  schemaVersion: 1, overallStatus: 'warning', codexVersion: '0.153.2',
+  checks: {
+    'config.load': { id: 'config.load', category: 'config', status: 'ok',
+      summary: 'config loaded', details: { model: 'gpt-5.5', 'mcp servers': '5' } },
+    'mcp.config': { id: 'mcp.config', category: 'mcp', status: 'warning',
+      summary: 'MCP configuration has optional issues', details: { 'configured servers': '5' } },
+  },
+};
+
+test('parseDoctor 는 체크를 배열로 펴고 카테고리를 지킨다', () => {
+  const r = codex.parseDoctor(DOCTOR_FIXTURE);
+  assert.equal(r.ok, true);
+  assert.equal(r.version, '0.153.2');
+  assert.equal(r.status, 'warning');
+  assert.equal(r.checks.length, 2);
+  // config.load 는 status:ok 라 warning 인 mcp.config 보다 뒤로 정렬된다(다음 테스트 참고).
+  // 인덱스를 고정하는 대신 id 로 찾아 필드 보존만 검증한다.
+  const cfg = r.checks.find(c => c.id === 'config.load');
+  assert.equal(cfg.category, 'config');
+  assert.equal(cfg.details.model, 'gpt-5.5');
+});
+
+test('parseDoctor 는 warning/fail 을 앞으로 정렬한다', () => {
+  const r = codex.parseDoctor(DOCTOR_FIXTURE);
+  assert.equal(r.checks[0].status, 'warning');   // mcp.config 가 먼저
+});
+
+test('parseDoctor 는 쓰레기 입력에 ok:false', () => {
+  assert.equal(codex.parseDoctor(null).ok, false);
+  assert.equal(codex.parseDoctor({}).ok, false);
+  assert.equal(codex.parseDoctor({ checks: 'x' }).ok, false);
+});

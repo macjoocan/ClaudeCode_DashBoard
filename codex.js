@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, execFile } = require('node:child_process');
 
 const TITLE_MAX = 200;
 
@@ -237,7 +237,57 @@ function transcript(sessionId, limit) {
   return parseRollout(path.resolve(row.rolloutPath || ''), limit);
 }
 
+// ------------------------------------------------------- codex doctor (구성 읽기)
+//
+// ~/.codex/config.toml 을 직접 파싱하지 않는다 - Node 에 내장 TOML 파서가 없고
+// 이 프로젝트는 새 npm 의존성을 금지한다. `codex doctor --json` 이 같은 정보(설정,
+// MCP, 인증, 경로, 설치 상태)를 평평한 JSON 으로 이미 주므로 그걸 그대로 쓴다.
+
+const STATUS_ORDER = { fail: 0, error: 0, warning: 1, warn: 1, ok: 2, idle: 3 };
+
+// json.checks 는 { checkId: {id, category, status, summary, details} } 형태의 객체다.
+// details 는 항상 문자열→문자열 평면 맵이다(실측). 화면에서 바로 나열할 수 있게
+// 배열로 펴고, 문제 있는 상태(경고/실패)를 앞으로 정렬한다.
+function parseDoctor(json) {
+  if (!json || typeof json !== 'object' || !json.checks || typeof json.checks !== 'object')
+    return { ok: false, version: null, status: null, checks: [] };
+  const checks = Object.values(json.checks)
+    .filter(c => c && typeof c === 'object')
+    .map(c => ({
+      id: String(c.id || ''), category: String(c.category || ''),
+      status: String(c.status || ''), summary: String(c.summary || ''),
+      details: (c.details && typeof c.details === 'object') ? c.details : {},
+    }))
+    .sort((a, b) => (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9)
+                    || a.id.localeCompare(b.id));
+  return { ok: true, version: json.codexVersion || null,
+           status: json.overallStatus || null, checks };
+}
+
+// codex doctor 는 네트워크 확인까지 해서 수 초가 걸린다.
+// 구성 로딩과 분리해 버튼을 눌렀을 때만 부른다 (Claude 쪽 MCP 확인과 같은 방침).
+//
+// findCodexBin() 은 npm 전역 설치의 codex.cmd 를 우선 찾는데, execFile 은 (spawn 과
+// 마찬가지로) 셸을 거치지 않아 .cmd/.bat 를 직접 실행하지 못하고 Windows 에서
+// "spawn EINVAL" 로 죽는다(실측). shell:true 는 인자를 이스케이프 없이 그냥 이어붙여
+// 넘기므로(Node 가 경고까지 띄운다) 경로에 공백이 있으면 깨질 수 있다. 대신
+// cmd.exe /c 로 감싸 배열 인자를 그대로 넘긴다 - server.js 의 다른 cmd.exe 스폰과
+// 같은 방식이고, Node 가 배열 인자를 CreateProcess 용으로 알아서 이스케이프해 준다.
+function doctor(cb) {
+  const bin = findCodexBin();
+  if (!bin) return cb(new Error('codex 를 찾을 수 없습니다'));
+  execFile('cmd.exe', ['/d', '/s', '/c', bin, 'doctor', '--json'],
+    { timeout: 60000, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
+    (err, stdout) => {
+      if (err && !stdout) return cb(err);
+      let j;
+      try { j = JSON.parse(stdout); } catch (e) { return cb(new Error('doctor 출력을 읽지 못했습니다')); }
+      cb(null, parseDoctor(j));
+    });
+}
+
 module.exports = {
   normalizeCwd, safeTitle, readThreads, TITLE_MAX, CODEX_HOME, STATE_DB, sessions, stamp,
   codexArgs, findCodexBin, parseRollout, transcript, isInsideSessions, liveMap, LIVE_DIR,
+  parseDoctor, doctor,
 };
