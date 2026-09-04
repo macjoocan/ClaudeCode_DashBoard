@@ -13,6 +13,15 @@ function runHook(payload, env) {
   });
 }
 
+// argv 로 url 을 넘기는 버전. 인자를 별도로 받아 codex-hooks-install.js 가
+// entryFor() 에서 박아 넣는 방식(스크립트 뒤에 url 인자)을 그대로 흉내낸다.
+function runHookWithArg(payload, url, env) {
+  return execFileSync(process.execPath, [path.join(__dirname, '..', 'codex-hook.js'), url], {
+    input: JSON.stringify(payload), encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
+}
+
 // execFileSync 는 부모 프로세스의 이벤트 루프를 완전히 멈춘다 — 같은 프로세스
 // 안에 살아있는 목(mock) 서버를 쓰는 테스트에서는 그동안 서버의 콜백(타이머 포함)이
 // 전혀 돌지 못한다. 트리클(조금씩 흘려보내며 절대 끝내지 않는) 서버처럼 서버 쪽
@@ -148,4 +157,42 @@ test('CCL_HOOK_URL 이 깨진 URL 이어도 exit 0 이고 stdout 은 비어 있�
   });
   assert.equal(r.status, 0);
   assert.equal(r.stdout, '');
+});
+
+test('argv[2] 로 넘긴 url 이 CCL_HOOK_URL 보다 우선한다', async () => {
+  let got = null;
+  const srv = http.createServer((req, res) => {
+    let b = ''; req.on('data', d => b += d);
+    req.on('end', () => { got = JSON.parse(b); res.writeHead(200); res.end('{}'); });
+  });
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  const argUrl = `http://127.0.0.1:${srv.address().port}/api/hook`;
+  const live = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-live-'));
+
+  runHookWithArg({ hook_event_name: 'PreToolUse', session_id: 'fff', cwd: 'D:\\x' }, argUrl,
+    // 죽은 포트를 CCL_HOOK_URL 로 줘서, argv 가 실제로 이긴다는 걸 확인한다.
+    { CCL_HOOK_URL: 'http://127.0.0.1:1/api/hook', CCL_LIVE_DIR: live });
+
+  await new Promise(r => setTimeout(r, 300));
+  srv.close();
+  assert.equal(got.hook_event_name, 'PreToolUse');
+  assert.equal(got.session_id, 'fff');
+});
+
+test('argv 가 없으면 CCL_HOOK_URL 로 폴백한다 (기존 동작 유지)', async () => {
+  let got = null;
+  const srv = http.createServer((req, res) => {
+    let b = ''; req.on('data', d => b += d);
+    req.on('end', () => { got = JSON.parse(b); res.writeHead(200); res.end('{}'); });
+  });
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  const envUrl = `http://127.0.0.1:${srv.address().port}/api/hook`;
+  const live = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-live-'));
+
+  runHook({ hook_event_name: 'PreToolUse', session_id: 'ggg', cwd: 'D:\\x' },
+          { CCL_HOOK_URL: envUrl, CCL_LIVE_DIR: live });
+
+  await new Promise(r => setTimeout(r, 300));
+  srv.close();
+  assert.equal(got.session_id, 'ggg');
 });

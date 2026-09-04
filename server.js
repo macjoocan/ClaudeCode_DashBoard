@@ -12,6 +12,7 @@ const terminals = require('./terminals');
 const harness = require('./harness');
 const events = require('./events');
 const hooksInstall = require('./hooks-install');
+const codexHooks = require('./codex-hooks-install.js');
 const cfgWrite = require('./config-write');
 const codex = require('./codex.js');
 
@@ -586,17 +587,24 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, events.snapshot(Number(url.searchParams.get('limit')) || 120));
     }
 
-    // ------- 훅 설치 상태 / 설치 / 제거 -------
+    // ------- 훅 설치 상태 / 설치 / 제거 (provider 로 Claude / Codex 분기) -------
     if (url.pathname === '/api/hooks/status') {
-      return json(res, 200, Object.assign(hooksInstall.status(HOOK_URL), { url: HOOK_URL }));
+      return json(res, 200, {
+        claude: Object.assign(hooksInstall.status(HOOK_URL), { url: HOOK_URL }),
+        codex: codexHooks.status(),
+      });
     }
     if (url.pathname === '/api/hooks/install' && req.method === 'POST') {
       const b = await readBody(req);
-      return json(res, 200, hooksInstall.install(HOOK_URL, b.mode));
+      return json(res, 200, b.provider === 'codex'
+        ? codexHooks.install(HOOK_URL)
+        : hooksInstall.install(HOOK_URL, b.mode));
     }
     if (url.pathname === '/api/hooks/uninstall' && req.method === 'POST') {
-      await readBody(req);
-      return json(res, 200, hooksInstall.uninstall(HOOK_URL));
+      const b = await readBody(req);
+      return json(res, 200, b.provider === 'codex'
+        ? codexHooks.uninstall()
+        : hooksInstall.uninstall(HOOK_URL));
     }
 
     // ------- 설정 쓰기 -------

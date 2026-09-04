@@ -13,7 +13,10 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 
-const HOOK_URL = process.env.CCL_HOOK_URL || 'http://127.0.0.1:7788/api/hook';
+// url 은 codex-hooks-install.js 가 명령줄 인자로 박아 넣는다 (CC_LAUNCHER_PORT 로
+// 런처가 기본 포트가 아닌 곳에서 뜬 경우에도 올바른 곳으로 POST 하기 위함).
+// argv[2] -> CCL_HOOK_URL -> 기본값 순으로 우선한다.
+const HOOK_URL = process.argv[2] || process.env.CCL_HOOK_URL || 'http://127.0.0.1:7788/api/hook';
 const LIVE_DIR = process.env.CCL_LIVE_DIR
   || path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), '.cc-launcher-live');
 
