@@ -49,17 +49,38 @@ function updateLive(body) {
 }
 
 function post(body, done) {
+  // done() 은 정확히 한 번만 — 아래 여러 이벤트가 겹쳐서 걸려도 안전하게.
+  let fired = false;
+  const finish = () => {
+    if (fired) return;
+    fired = true;
+    clearTimeout(hardDeadline);
+    done();
+  };
+
   let u;
-  try { u = new URL(HOOK_URL); } catch { return done(); }
+  try { u = new URL(HOOK_URL); } catch { return finish(); }
   const data = Buffer.from(JSON.stringify(body), 'utf8');
+
+  // timeout: 2000 은 소켓 "비활동" 타임아웃이라 활동이 있으면 계속 리셋된다.
+  // 서버가 응답을 끝내지 않고 몇 바이트씩 계속 흘려보내면(trickle) 그 타임아웃은
+  // 영원히 안 걸릴 수 있다. 그래서 어떤 소켓 이벤트가 오가든 상관없이 무조건
+  // 끝내는 하드 데드라인을 따로 둔다. unref() 하면 안 된다 — 반드시 발화해야 한다.
+  const hardDeadline = setTimeout(finish, 3000);
+
   const req = http.request({
     hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Content-Length': data.length,
                Origin: `http://${u.host}` },
     timeout: 2000,
-  }, res => { res.resume(); res.on('end', done); });
-  req.on('error', done);
-  req.on('timeout', () => { req.destroy(); done(); });
+  }, res => {
+    res.resume();
+    res.on('end', finish);
+    res.on('error', finish);   // 스트림 'error' 를 처리 안 하면 프로세스가 죽는다
+  });
+  req.on('error', finish);
+  req.on('timeout', () => { req.destroy(); finish(); });
+  req.on('close', finish);     // 위 이벤트들이 다 안 잡아도 마지막 안전망
   req.end(data);
 }
 
