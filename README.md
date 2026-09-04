@@ -15,7 +15,12 @@ wscript run-hidden.vbs  # 창 없이 백그라운드 (시작프로그램 등록�
 
 포트 변경: `set CC_LAUNCHER_PORT=9000`
 의존성(node-pty, ws)은 첫 실행 때 자동으로 설치된다.
-Node.js 24 이상이 필요하다 - Codex 세션 목록을 읽을 때 `node:sqlite` 를 쓴다.
+이 프로젝트는 Node.js **v24.13.0** 에서 개발·테스트됐다. Codex 세션 목록을 읽을 때
+`node:sqlite` 를 쓰는데, 이게 최신 Node 를 요구하는 이유다. Node 공식 문서 기준
+`node:sqlite` 는 v22.5.0 에서 `--experimental-sqlite` 플래그와 함께 처음 추가됐고,
+플래그 없이 쓸 수 있게 된 건 v22.13.0(22.x) / v23.4.0(23.x) 부터다 - 이 코드는 플래그를
+넘기지 않으므로 최소 그 버전은 필요하다. 다만 실제로 돌려본 건 v24.13.0 뿐이고,
+그 사이 버전에서의 동작은 확인하지 않았다.
 
 > 스크립트 이름이 `start.bat` 이 아닌 이유: cmd 의 내장 `start` 명령과 헷갈려
 > 엉뚱하게 실행되는 사고를 막기 위해 `run.bat` 으로 뒀다.
@@ -322,9 +327,11 @@ node hooks-install.js uninstall         # 제거
 
 ### Codex
 
-Codex 는 **`type:"http"` 훅을 지원하지 않는다** (핸들러는 `command` 와 `mcp_tool` 뿐이다).
-그래서 Claude 쪽처럼 프로세스 없이 직접 POST 할 방법이 없고, 이벤트마다 작은 브리지
-스크립트 `codex-hook.js` 를 실행해 그 프로세스가 대신 런처로 POST 한다.
+Codex 의 훅 설정 스키마는 핸들러 종류를 4개(`command`, `mcp_tool`, `prompt`, `agent`)
+받아들이지만, 공식 문서 기준 `prompt` 와 `agent` 는 파싱만 되고 실행되지는 않는다.
+그래서 실제로 동작하는 건 `command` 와 `mcp_tool` 뿐이고, **`http` 핸들러는 아예
+없다.** Claude 쪽처럼 프로세스 없이 직접 POST 할 방법이 없다는 뜻이라, 이벤트마다
+작은 브리지 스크립트 `codex-hook.js` 를 실행해 그 프로세스가 대신 런처로 POST 한다.
 
 `~/.codex/hooks.json` 에 이벤트 12개를 건다 - SessionStart/End, UserPromptSubmit,
 PreToolUse/PostToolUse, PermissionRequest, SubagentStart/Stop, Stop, Interrupt,
@@ -400,7 +407,8 @@ Codex 세션은 같은 버튼이 다른 명령을 쓴다: 이어하기 `codex re
 - 검색: 프로젝트명 · 경로 · 세션 제목 · 첫/마지막 프롬프트 공백 구분 AND
 - 터미널에 포커스가 있으면 전역 단축키는 동작하지 않는다 (키를 PTY 가 받는다)
 - 터미널 복사/붙여넣기: `Ctrl+V` 붙여넣기 · 선택이 있을 때 `Ctrl+C` 복사(없으면
-  평소대로 SIGINT) · `Ctrl+Shift+C` 복사 · 우클릭은 선택이 있으면 복사, 없으면 붙여넣기
+  평소대로 SIGINT) · `Ctrl+Shift+C` 복사(선택 없으면 SIGINT 로 안 내려가고 키 입력만
+  무시된다) · 우클릭은 선택이 있으면 복사, 없으면 붙여넣기
 
 ## 세션 제목
 
