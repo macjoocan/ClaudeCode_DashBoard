@@ -135,8 +135,10 @@
     if (!DATA) { host.innerHTML = '<div class="empty">불러오는 중&#8230;</div>'; return; }
     var d = DATA;
 
-    var installed = CC.live && CC.live.status && CC.live.status.installed
-      && CC.live.status.installed.length;
+    var st = CC.live && CC.live.status;
+    var installed = st && (
+      ((st.claude && st.claude.installed) || []).length ||
+      ((st.codex && st.codex.installed) || []).length);
     if (!installed) {
       host.innerHTML = (CC.live ? CC.live.renderBanner() : '')
         + '<div class="empty">훅을 설치하면 여기에 세션과 서브에이전트의 활동이 실시간으로 그려집니다.</div>';

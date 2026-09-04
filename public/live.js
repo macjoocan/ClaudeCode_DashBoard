@@ -120,14 +120,20 @@
     return parts.length ? parts[parts.length - 1] : '';
   }
 
-  // 훅 설치 배너
+  // 훅 설치 배너 - Claude / Codex 를 각각 그린다
   function renderBanner() {
     var h = hookStatus;
+    if (!h) return '';
+    return renderClaudeBanner(h.claude) + renderCodexBanner(h.codex);
+  }
+
+  // Claude 배너는 기존 그대로 h.claude 를 읽는다
+  function renderClaudeBanner(h) {
     if (!h) return '';
     var on = h.installed && h.installed.length;
     if (!on) {
       return '<div class="hookbar off">'
-        + '<div><b>실시간 관측이 꺼져 있습니다.</b> 훅을 설치하면 세션이 지금 무슨 툴을 돌리는지,'
+        + '<div><b>Claude 실시간 관측이 꺼져 있습니다.</b> 훅을 설치하면 세션이 지금 무슨 툴을 돌리는지,'
         + ' 서브에이전트가 언제 뜨고 끝나는지 이 화면에서 바로 보입니다.</div>'
         + '<div class="hbtns">'
         +   '<button class="btn primary xs" data-hookinstall="lifecycle">설치 (세션·에이전트)</button>'
@@ -142,7 +148,7 @@
     }
     return '<div class="hookbar on">'
       + '<div><span class="st ' + (connected ? 'busy' : '') + '"></span>'
-      +   '<b>실시간 관측 ' + (connected ? '연결됨' : '연결 끊김 - 재시도 중') + '</b>'
+      +   '<b>Claude 실시간 관측 ' + (connected ? '연결됨' : '연결 끊김 - 재시도 중') + '</b>'
       +   ' · ' + h.installed.length + '개 이벤트 (' + (h.mode === 'full' ? '툴까지 전부' : '세션·에이전트') + ')</div>'
       + '<div class="hbtns">'
       +   (h.mode === 'full'
@@ -154,11 +160,40 @@
       + '</div>';
   }
 
+  // Codex 는 mode(lifecycle/full) 구분이 없다 - 켜기/끄기 두 버튼뿐
+  function renderCodexBanner(h) {
+    if (!h) return '';
+    var on = h.installed && h.installed.length;
+    if (!on) {
+      return '<div class="hookbar off">'
+        + '<div><b>Codex 실시간 관측이 꺼져 있습니다.</b> 훅을 설치하면 Codex 세션의 진행 상태도'
+        + ' 이 화면에서 바로 보입니다.</div>'
+        + '<div class="hbtns">'
+        +   '<button class="btn primary xs" data-hookinstall="on" data-provider="codex">관측 켜기</button>'
+        + '</div>'
+        + '<div class="hnote">'
+        +   '<code>' + esc(h.file) + '</code> 에 훅 항목을 넣습니다. <b>훅은 새로 시작하는 세션부터 적용됩니다.</b>'
+        + '</div></div>';
+    }
+    return '<div class="hookbar on">'
+      + '<div><span class="st ' + (connected ? 'busy' : '') + '"></span>'
+      +   '<b>Codex 실시간 관측 ' + (connected ? '연결됨' : '연결 끊김 - 재시도 중') + '</b>'
+      +   ' · ' + h.installed.length + '개 이벤트</div>'
+      + '<div class="hbtns">'
+      +   '<button class="btn ghost xs" data-hookuninstall="1" data-provider="codex">관측 끄기</button>'
+      + '</div>'
+      + '<div class="hnote">' + esc(h.installed.join(', ')) + '</div>'
+      + '</div>';
+  }
+
   // 실시간 활동 피드
   function renderFeed() {
     if (!FEED.length) {
+      var hasHook = !!(hookStatus && (
+        (hookStatus.claude && hookStatus.claude.installed && hookStatus.claude.installed.length) ||
+        (hookStatus.codex && hookStatus.codex.installed && hookStatus.codex.installed.length)));
       return '<div class="feedempty">'
-        + (hookStatus && hookStatus.installed.length
+        + (hasHook
             ? '아직 이벤트가 없습니다.<br>훅은 <b>새로 시작하는 세션</b>부터 붙습니다 —<br>세션을 새로 열거나 이어하기를 눌러보세요.'
             : '훅을 설치하면 여기에 활동이 실시간으로 흐릅니다.')
         + '</div>';
@@ -205,18 +240,20 @@
       .catch(function () { hookStatus = null; });
   }
 
-  function install(mode) {
+  function install(mode, provider) {
+    var body = provider === 'codex' ? { provider: 'codex' } : { mode: mode };
     return fetch('/api/hooks/install', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ mode: mode })
+      body: JSON.stringify(body)
     }).then(function (r) { return r.json(); }).then(function (j) {
       if (j.error) throw new Error(j.error);
       return loadStatus().then(function () { return j; });
     });
   }
-  function uninstall() {
+  function uninstall(provider) {
+    var body = provider === 'codex' ? { provider: 'codex' } : {};
     return fetch('/api/hooks/uninstall', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}'
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
     }).then(function (r) { return r.json(); }).then(function (j) {
       if (j.error) throw new Error(j.error);
       return loadStatus().then(function () { return j; });

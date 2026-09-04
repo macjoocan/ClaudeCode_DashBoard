@@ -121,7 +121,7 @@
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         action: opts.action || 'new', cwd: opts.cwd, sessionId: opts.sessionId,
-        title: opts.title, cols: cols, rows: rows
+        title: opts.title, cols: cols, rows: rows, provider: opts.provider
       })
     }).then(function (r) { return r.json(); }).then(function (j) {
       if (j.error) throw new Error(j.error);

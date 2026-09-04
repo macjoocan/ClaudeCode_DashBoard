@@ -503,7 +503,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/projects') {
       return json(res, 200, {
         projects: scan(),
-        env: { claude: CLAUDE_BIN, wt: WT_BIN, projectsDir: PROJECTS_DIR },
+        env: { claude: CLAUDE_BIN, codex: CODEX_BIN, wt: WT_BIN, projectsDir: PROJECTS_DIR },
       });
     }
 
@@ -519,7 +519,10 @@ const server = http.createServer(async (req, res) => {
       if (url.searchParams.get('provider') === 'codex') {
         const id = url.searchParams.get('id') || '';
         if (!SAFE_ID.test(id)) throw new Error('세션 ID 가 올바르지 않습니다');
-        return json(res, 200, codex.transcript(id, limit));
+        const t = codex.transcript(id, limit);
+        // codex.transcript() 는 {msgs,total} 이다 (codex.js/test 계약) - 프론트는
+        // Claude 쪽 transcript() 와 같은 {messages,total} 모양을 읽으므로 여기서 맞춰준다.
+        return json(res, 200, { messages: t.msgs, total: t.total, truncated: t.total > t.msgs.length });
       }
       return json(res, 200, transcript(
         url.searchParams.get('slug') || '',
@@ -545,9 +548,13 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/api/fav' && req.method === 'POST') {
       const b = await readBody(req);
-      if (!SAFE_SLUG.test(String(b.slug || '')) || !SAFE_ID.test(String(b.id || '')))
-        throw new Error('잘못된 세션 지정');
-      const token = `${b.slug}/${b.id}`;
+      if (!SAFE_ID.test(String(b.id || ''))) throw new Error('잘못된 세션 지정');
+      let token;
+      if (b.provider === 'codex') token = 'codex:' + b.id;
+      else {
+        if (!SAFE_SLUG.test(String(b.slug || ''))) throw new Error('잘못된 세션 지정');
+        token = `${b.slug}/${b.id}`;      // 기존 형식 유지 - favorites.json 하위호환
+      }
       const favs = loadFavs();
       const i = favs.indexOf(token);
       if (i >= 0) favs.splice(i, 1); else favs.push(token);
