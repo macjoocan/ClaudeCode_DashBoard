@@ -41,3 +41,66 @@ test('safeTitle 은 개행을 공백으로 바꾼다', () => {
 test('safeTitle 은 후보가 모두 비면 빈 문자열', () => {
   assert.equal(codex.safeTitle(null, '', '  '), '');
 });
+
+const { DatabaseSync } = require('node:sqlite');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+// 실제 스키마의 부분집합으로 픽스처 DB를 만든다.
+function makeFixtureDb() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codextest-'));
+  const p = path.join(dir, 'state.sqlite');
+  const db = new DatabaseSync(p);
+  db.exec(`create table threads (
+    id text, rollout_path text, cwd text, title text,
+    first_user_message text, preview text,
+    updated_at_ms integer, created_at_ms integer,
+    git_branch text, thread_source text, source text, archived integer
+  )`);
+  db.exec(`create table thread_spawn_edges (
+    parent_thread_id text, child_thread_id text, status text
+  )`);
+  const ins = db.prepare(`insert into threads values (?,?,?,?,?,?,?,?,?,?,?,?)`);
+  ins.run('aaa-111', 'C:\\r\\a.jsonl', '\\\\?\\D:\\proj\\App', '앱 작업',
+          '첫 프롬프트', '마지막', 2000, 1000, 'main', 'user', null, 0);
+  ins.run('bbb-222', 'C:\\r\\b.jsonl', '\\\\?\\D:\\proj\\App', 'x'.repeat(400),
+          '서브 프롬프트', '미리보기', 3000, 1500, 'main', 'subagent',
+          '{"subagent":{"thread_spawn":{"parent_thread_id":"aaa-111","depth":1}}}', 0);
+  ins.run('ccc-333', 'C:\\r\\c.jsonl', '\\\\?\\D:\\proj\\Old', '보관됨',
+          '옛날', '옛날', 500, 400, 'main', 'user', null, 1);
+  db.close();
+  return p;
+}
+
+test('readThreads 는 archived 를 제외하고 최신순으로 준다', () => {
+  const rows = codex.readThreads(makeFixtureDb());
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].id, 'bbb-222');   // updated_at_ms 3000 이 먼저
+  assert.equal(rows[1].id, 'aaa-111');
+});
+
+test('readThreads 는 cwd 를 정규화한다', () => {
+  const rows = codex.readThreads(makeFixtureDb());
+  assert.equal(rows[0].cwd, 'D:\\proj\\App');
+});
+
+test('readThreads 는 title 을 자른다', () => {
+  const rows = codex.readThreads(makeFixtureDb());
+  assert.equal(rows[0].title.length, 201);
+});
+
+test('readThreads 는 provider 를 codex 로 박는다', () => {
+  const rows = codex.readThreads(makeFixtureDb());
+  assert.ok(rows.every(r => r.provider === 'codex'));
+});
+
+test('readThreads 는 source JSON 에서 부모 스레드를 뽑는다', () => {
+  const rows = codex.readThreads(makeFixtureDb());
+  assert.equal(rows.find(r => r.id === 'bbb-222').parentId, 'aaa-111');
+  assert.equal(rows.find(r => r.id === 'aaa-111').parentId, null);
+});
+
+test('readThreads 는 DB 가 없으면 빈 배열', () => {
+  assert.deepEqual(codex.readThreads('C:\\없는\\경로\\x.sqlite'), []);
+});
