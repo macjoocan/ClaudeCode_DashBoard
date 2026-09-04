@@ -159,7 +159,50 @@ function findCodexBin() {
   } catch { return null; }
 }
 
+// rollout jsonl 한 줄 = { timestamp, type, payload }.
+// 첫 줄(session_meta)은 base_instructions 때문에 50KB 를 넘을 수 있어
+// 줄 단위로 읽되 내용은 필요한 것만 뽑는다.
+function rowToMsg(j) {
+  const p = j.payload || {};
+  const at = j.timestamp || null;
+  if (j.type === 'event_msg' && p.type === 'user_message' && p.message)
+    return { role: 'user', text: String(p.message), at };
+  if (j.type === 'event_msg' && p.type === 'agent_message' && p.message)
+    return { role: 'assistant', text: String(p.message), at };
+  if (j.type === 'response_item' && p.type === 'function_call')
+    return { role: 'tool', text: `${p.name || 'tool'} ${String(p.arguments || '').slice(0, 400)}`, at };
+  return null;
+}
+
+function parseRollout(file, limit) {
+  if (!file || !fs.existsSync(file)) return { msgs: [], total: 0 };
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch { return { msgs: [], total: 0 }; }
+
+  const msgs = [];
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    let j;
+    try { j = JSON.parse(line); } catch { continue; }
+    const m = rowToMsg(j);
+    if (m) msgs.push(m);
+  }
+  const n = Math.max(1, Number(limit) || 40);
+  return { msgs: msgs.slice(-n), total: msgs.length };
+}
+
+function transcript(sessionId, limit) {
+  // sessions() 를 쓴다 - readThreads() 는 매번 DB 를 다시 연다
+  const row = sessions().find(r => r.id === sessionId);
+  if (!row) throw new Error('세션을 찾을 수 없습니다');
+  // 경로 탈출 차단: rollout 은 반드시 ~/.codex/sessions 하위여야 한다
+  const sessionsDir = path.join(CODEX_HOME, 'sessions');
+  const real = path.resolve(row.rolloutPath || '');
+  if (!real.startsWith(path.resolve(sessionsDir))) throw new Error('세션 파일 경로가 올바르지 않습니다');
+  return parseRollout(real, limit);
+}
+
 module.exports = {
   normalizeCwd, safeTitle, readThreads, TITLE_MAX, CODEX_HOME, STATE_DB, sessions, stamp,
-  codexArgs, findCodexBin,
+  codexArgs, findCodexBin, parseRollout, transcript,
 };

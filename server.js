@@ -513,10 +513,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/transcript') {
+      const limit = Number(url.searchParams.get('limit')) || 40;
+      if (url.searchParams.get('provider') === 'codex') {
+        const id = url.searchParams.get('id') || '';
+        if (!SAFE_ID.test(id)) throw new Error('세션 ID 가 올바르지 않습니다');
+        return json(res, 200, codex.transcript(id, limit));
+      }
       return json(res, 200, transcript(
         url.searchParams.get('slug') || '',
-        url.searchParams.get('id') || '',
-        Number(url.searchParams.get('limit')) || 40));
+        url.searchParams.get('id') || '', limit));
     }
 
     if (url.pathname === '/api/launch' && req.method === 'POST') {

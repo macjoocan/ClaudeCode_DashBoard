@@ -155,3 +155,59 @@ test('codexArgs 는 resume/fork 에 세션 ID 가 없으면 던진다', () => {
   assert.throws(() => codex.codexArgs('resume'), /세션 ID/);
   assert.throws(() => codex.codexArgs('fork', ''), /세션 ID/);
 });
+
+// ------------------------------------------------------- parseRollout
+
+function writeRollout(lines) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-roll-'));
+  const p = path.join(dir, 'r.jsonl');
+  fs.writeFileSync(p, lines.map(o => JSON.stringify(o)).join('\n') + '\n', 'utf8');
+  return p;
+}
+
+test('parseRollout 은 사용자/어시스턴트/툴을 뽑는다', () => {
+  const p = writeRollout([
+    { timestamp: '2026-08-17T04:34:30.523Z', type: 'session_meta',
+      payload: { session_id: 'aaa', cwd: 'D:\\x', base_instructions: { text: 'x'.repeat(5000) } } },
+    { timestamp: '2026-08-17T04:34:30.965Z', type: 'event_msg',
+      payload: { type: 'user_message', message: '안녕' } },
+    { timestamp: '2026-08-17T04:34:38.427Z', type: 'response_item',
+      payload: { type: 'function_call', name: 'exec_command', arguments: '{"cmd":"ls"}' } },
+    { timestamp: '2026-08-17T04:38:25.784Z', type: 'event_msg',
+      payload: { type: 'agent_message', message: '했습니다' } },
+  ]);
+  const out = codex.parseRollout(p, 40);
+  assert.equal(out.msgs.length, 3);
+  assert.equal(out.msgs[0].role, 'user');
+  assert.equal(out.msgs[0].text, '안녕');
+  assert.equal(out.msgs[1].role, 'tool');
+  assert.ok(out.msgs[1].text.includes('exec_command'));
+  assert.equal(out.msgs[2].role, 'assistant');
+});
+
+test('parseRollout 은 limit 만큼 뒤에서 자른다', () => {
+  const lines = [];
+  for (let i = 0; i < 50; i++) {
+    lines.push({ timestamp: '2026-08-17T04:34:30.965Z', type: 'event_msg',
+                 payload: { type: 'user_message', message: '메시지 ' + i } });
+  }
+  const out = codex.parseRollout(writeRollout(lines), 10);
+  assert.equal(out.msgs.length, 10);
+  assert.equal(out.msgs[9].text, '메시지 49');
+  assert.equal(out.total, 50);
+});
+
+test('parseRollout 은 깨진 줄을 건너뛴다', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-roll-'));
+  const p = path.join(dir, 'r.jsonl');
+  fs.writeFileSync(p, '{깨짐\n' + JSON.stringify({
+    timestamp: '2026-08-17T04:34:30.965Z', type: 'event_msg',
+    payload: { type: 'user_message', message: '살아남음' } }) + '\n', 'utf8');
+  const out = codex.parseRollout(p, 40);
+  assert.equal(out.msgs.length, 1);
+  assert.equal(out.msgs[0].text, '살아남음');
+});
+
+test('parseRollout 은 없는 파일에 빈 결과', () => {
+  assert.deepEqual(codex.parseRollout('C:\\없는\\r.jsonl', 40), { msgs: [], total: 0 });
+});
