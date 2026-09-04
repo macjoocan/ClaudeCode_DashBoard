@@ -139,7 +139,7 @@ Expected: PASS — 9 tests
 ```json
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   },
 ```
 
@@ -642,7 +642,7 @@ git commit -m "feat(codex): 외부 창과 내장 터미널 실행 라우팅"
 - Modify: `server.js:475-480` (`/api/transcript`)
 
 **Interfaces:**
-- Consumes: Task 2 의 `readThreads` (rolloutPath 조회용)
+- Consumes: Task 3 의 `sessions()` (rolloutPath 조회용 — 캐시가 걸려 있어 `readThreads()` 보다 낫다)
 - Produces: `codex.js` 가 추가로 export — `transcript(sessionId: string, limit: number) => { msgs: Array<{role, text, at}>, total: number }`. `role` 은 `'user' | 'assistant' | 'tool'` 로 Claude 쪽과 같은 어휘를 쓴다.
 
 - [ ] **Step 1: 실패하는 테스트를 쓴다**
@@ -746,7 +746,8 @@ function parseRollout(file, limit) {
 }
 
 function transcript(sessionId, limit) {
-  const row = readThreads().find(r => r.id === sessionId);
+  // sessions() 를 쓴다 - readThreads() 는 매번 DB 를 다시 연다
+  const row = sessions().find(r => r.id === sessionId);
   if (!row) throw new Error('세션을 찾을 수 없습니다');
   // 경로 탈출 차단: rollout 은 반드시 ~/.codex/sessions 하위여야 한다
   const sessionsDir = path.join(CODEX_HOME, 'sessions');
@@ -1854,7 +1855,7 @@ Expected: 세션 수가 두 provider 합이고, `전체 billable` 이 0보다 �
 - [ ] **Step 9: 전체 테스트**
 
 Run: `npm test`
-Expected: PASS — 47 tests (codex 28 + hook 6 + hooks-install 6 + usage 7)
+Expected: PASS — 50 tests (codex 31 + hook 6 + hooks-install 6 + usage 7)
 
 - [ ] **Step 10: 커밋**
 
