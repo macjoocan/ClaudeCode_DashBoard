@@ -84,3 +84,50 @@ test('url 이 박혀 있어도 isOurs/uninstall 은 여전히 우리 항목으�
   const j = JSON.parse(fs.readFileSync(path.join(dir, 'hooks.json'), 'utf8'));
   assert.equal(Object.keys(j.hooks).length, 0);
 });
+
+// --- Fix Round 1 ---
+
+// Finding 1: 최상위가 배열/null/문자열/숫자면 install() 은 던져야 하고,
+// 원본 파일은 바이트 단위로 그대로 남아야 한다 (조용한 무동작 금지).
+for (const [label, raw] of [['배열([])', '[]'], ['null', 'null'], ['문자열', '"x"'], ['숫자', '123']]) {
+  test(`install 은 최상위가 ${label} 인 hooks.json 에 던지고 덮어쓰지 않는다`, () => {
+    const { dir, mod } = fresh();
+    fs.writeFileSync(path.join(dir, 'hooks.json'), raw, 'utf8');
+    assert.throws(() => mod.install());
+    assert.equal(fs.readFileSync(path.join(dir, 'hooks.json'), 'utf8'), raw);
+  });
+}
+
+// Finding 2: url 에 큰따옴표가 섞이면 명령 문자열이 깨질 수 있으니 install() 이
+// 거부해야 한다. 검증이 파일을 건드리기 전에 일어나므로 기존 파일도 그대로다.
+test('큰따옴표가 든 url 은 install() 이 거부하고 아무것도 쓰지 않는다', () => {
+  const { dir, mod } = fresh();
+  fs.writeFileSync(path.join(dir, 'hooks.json'), '{"hooks":{}}', 'utf8');
+  assert.throws(() => mod.install('http://127.0.0.1:9000/"; calc; "'));
+  assert.equal(fs.readFileSync(path.join(dir, 'hooks.json'), 'utf8'), '{"hooks":{}}');
+});
+
+test('URL 로 파싱되지 않는 url 도 install() 이 거부한다', () => {
+  const { mod } = fresh();
+  assert.throws(() => mod.install('not a url::::'));
+});
+
+// Finding 3: command 가 codex-hook.js 를 언급하더라도 우리 MARK(statusMessage)
+// 가 없으면 남의 훅으로 보고 install()/uninstall() 모두 건드리면 안 된다.
+test('codex-hook.js 를 언급하지만 MARK 가 없는 남의 훅은 install/uninstall 을 견딘다', () => {
+  const { dir, mod } = fresh();
+  const strangerCommand = '"C:\\tools\\my-wrapper.exe" "codex-hook.js" "--custom"';
+  fs.writeFileSync(path.join(dir, 'hooks.json'), JSON.stringify({
+    hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: strangerCommand }] }] },
+  }), 'utf8');
+
+  mod.install();
+  let j = JSON.parse(fs.readFileSync(path.join(dir, 'hooks.json'), 'utf8'));
+  assert.equal(j.hooks.PreToolUse.length, 2);   // 남의 훅 + 우리 훅
+  assert.ok(j.hooks.PreToolUse.some(e => e.hooks[0].command === strangerCommand));
+
+  mod.uninstall();
+  j = JSON.parse(fs.readFileSync(path.join(dir, 'hooks.json'), 'utf8'));
+  assert.equal(j.hooks.PreToolUse.length, 1);
+  assert.equal(j.hooks.PreToolUse[0].hooks[0].command, strangerCommand);
+});
