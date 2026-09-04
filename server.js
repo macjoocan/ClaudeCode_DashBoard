@@ -36,6 +36,7 @@ const SAFE_SLUG = /^[A-Za-z0-9._\-]+$/;
 const SAFE_ID = /^[A-Za-z0-9\-]+$/;
 
 const CLAUDE_BIN = findClaudeBin();
+const CODEX_BIN = codex.findCodexBin();
 const WT_BIN = findBin('wt.exe');
 
 function findBin(name) {
@@ -381,11 +382,20 @@ function claudeCommand(action, sessionId, extra) {
   return parts.join(' ');
 }
 
-function launch({ action, cwd, sessionId, title, extra }) {
+// claudeCommand 와 형제 함수. codex CLI 를 외부 터미널에서 실행할 명령 문자열을 만든다.
+function codexCommand(action, sessionId) {
+  const q = s => `'${String(s).replace(/'/g, "''")}'`;
+  if (!CODEX_BIN) throw new Error('codex 를 찾을 수 없습니다 (npm i -g @openai/codex)');
+  return [`& ${q(CODEX_BIN)}`, ...codex.codexArgs(action, sessionId)].join(' ');
+}
+
+function launch({ action, cwd, sessionId, title, extra, provider }) {
   if (!cwd || !fs.existsSync(cwd)) throw new Error(`폴더가 없습니다: ${cwd}`);
   if ((action === 'resume' || action === 'fork') && !SAFE_ID.test(String(sessionId || '')))
     throw new Error('세션 ID 가 올바르지 않습니다');
-  const inner = claudeCommand(action, sessionId, extra);
+  const inner = provider === 'codex'
+    ? codexCommand(action, sessionId)
+    : claudeCommand(action, sessionId, extra);
   const tabTitle = title || path.basename(cwd);
 
   if (WT_BIN) {
@@ -660,6 +670,8 @@ const server = http.createServer(async (req, res) => {
         action: b.action || 'new', cwd: b.cwd, sessionId: b.sessionId,
         title: b.title, cols: b.cols, rows: b.rows, model: b.model,
         claudeBin: CLAUDE_BIN,
+        provider: b.provider === 'codex' ? 'codex' : 'claude',
+        codexBin: CODEX_BIN,
       });
       return json(res, 200, { ok: true, term: terminals.info(t) });
     }

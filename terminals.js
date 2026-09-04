@@ -37,13 +37,19 @@ function claudeArgs(action, sessionId) {
   return [];   // 'new'
 }
 
-function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model }) {
+function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model, provider, codexBin }) {
   if (!cwd || !fs.existsSync(cwd)) throw new Error(`폴더가 없습니다: ${cwd}`);
 
-  const args = claudeArgs(action, sessionId);
-  if (model) args.push('--model', model);
+  const isCodex = provider === 'codex';
+  const bin = isCodex ? codexBin : claudeBin;
+  if (!bin) throw new Error(isCodex ? 'codex 를 찾을 수 없습니다' : 'claude 를 찾을 수 없습니다');
 
-  const p = pty.spawn(claudeBin, args, {
+  const args = isCodex
+    ? require('./codex.js').codexArgs(action, sessionId)
+    : claudeArgs(action, sessionId);
+  if (model && !isCodex) args.push('--model', model);
+
+  const p = pty.spawn(bin, args, {
     name: 'xterm-256color',
     cols: Math.max(40, Math.min(400, cols || 120)),
     rows: Math.max(10, Math.min(200, rows || 32)),
@@ -55,6 +61,7 @@ function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model })
   const id = 't' + (++seq) + '-' + Date.now().toString(36);
   const t = {
     id, action, cwd, sessionId: sessionId || null,
+    provider: isCodex ? 'codex' : 'claude',
     title: title || path.basename(cwd),
     pid: p.pid,
     startedAt: Date.now(),
@@ -106,6 +113,7 @@ function info(t) {
   if (live && live.sessionId && !t.sessionId) t.sessionId = live.sessionId;  // 새 세션의 ID 확보
   return {
     id: t.id, title: t.title, cwd: t.cwd, action: t.action,
+    provider: t.provider || 'claude',
     sessionId: t.sessionId, pid: t.pid,
     cols: t.cols, rows: t.rows,
     startedAt: t.startedAt, lastAt: t.lastAt,

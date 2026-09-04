@@ -143,3 +143,15 @@ test('stamp 는 updated_at_ms 변화 없이 archived 만 바뀌어도 달라진�
   const after = codex.stamp(p);
   assert.notEqual(before, after);
 });
+
+test('codexArgs 는 각 동작을 올바른 인자로 바꾼다', () => {
+  assert.deepEqual(codex.codexArgs('new'), []);
+  assert.deepEqual(codex.codexArgs('resume', 'aaa-111'), ['resume', 'aaa-111']);
+  assert.deepEqual(codex.codexArgs('fork', 'aaa-111'), ['fork', 'aaa-111']);
+  assert.deepEqual(codex.codexArgs('continue'), ['resume', '--last']);
+});
+
+test('codexArgs 는 resume/fork 에 세션 ID 가 없으면 던진다', () => {
+  assert.throws(() => codex.codexArgs('resume'), /세션 ID/);
+  assert.throws(() => codex.codexArgs('fork', ''), /세션 ID/);
+});

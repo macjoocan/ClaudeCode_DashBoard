@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
+const { execFileSync } = require('node:child_process');
 
 const TITLE_MAX = 200;
 
@@ -134,4 +135,31 @@ function sessions() {
   return rows;
 }
 
-module.exports = { normalizeCwd, safeTitle, readThreads, TITLE_MAX, CODEX_HOME, STATE_DB, sessions, stamp };
+// 실행 시 codex CLI 에 넘길 인자를 만든다. Claude 쪽 claudeArgs 와 대응.
+function codexArgs(action, sessionId) {
+  if (action === 'resume' || action === 'fork') {
+    if (!sessionId) throw new Error('세션 ID 가 필요합니다');
+    return [action, sessionId];
+  }
+  if (action === 'continue') return ['resume', '--last'];
+  return [];   // 'new'
+}
+
+// PATH 에서 codex 실행파일을 찾는다. 없으면 null.
+// npm 전역 설치는 같은 디렉터리에 확장자 없는 POSIX 셸 스크립트(#!/bin/sh, WSL/Git-Bash 용)와
+// codex.cmd(Windows 용)를 함께 만든다. where.exe 는 확장자 없는 쪽을 먼저 나열하는데,
+// 그 파일은 PE 형식이 아니라 pty.spawn 이 "Cannot create process, error code: 193" 으로 죽는다.
+// 그래서 .cmd/.exe/.bat 처럼 Windows 가 직접 실행 가능한 확장자를 우선한다
+// (findClaudeBin 이 claude.exe/claude.cmd 를 우선하는 것과 같은 이유).
+function findCodexBin() {
+  try {
+    const lines = execFileSync('where.exe', ['codex'], { encoding: 'utf8' })
+      .split(/\r?\n/).filter(Boolean);
+    return lines.find(l => /\.(cmd|exe|bat)$/i.test(l)) || lines[0] || null;
+  } catch { return null; }
+}
+
+module.exports = {
+  normalizeCwd, safeTitle, readThreads, TITLE_MAX, CODEX_HOME, STATE_DB, sessions, stamp,
+  codexArgs, findCodexBin,
+};
