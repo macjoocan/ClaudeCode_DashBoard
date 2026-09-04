@@ -385,7 +385,7 @@
       if (yy == null) return;
       var cls = 'gn sess' + (s.live ? ' live' : '') + (s.embedded ? ' emb' : '');
       svg.push('<g class="' + cls + '" data-gsel="' + esc(s.id) + '"'
-        + (s.slug ? ' data-view="' + esc(s.slug) + '|' + esc(s.sessionId) + '"' : '')
+        + (s.sessionId ? ' data-view="' + esc(s.provider) + '|' + esc(s.slug) + '|' + esc(s.sessionId) + '"' : '')
         + (s.termId ? ' data-goterm="' + esc(s.termId) + '"' : '') + '>'
         + '<rect x="' + LAY.colS + '" y="' + yy + '" width="' + LAY.boxS + '" height="22" rx="6"/>'
         + '<circle cx="' + (LAY.colS + 13) + '" cy="' + (yy + 11) + '" r="3.5" class="'
