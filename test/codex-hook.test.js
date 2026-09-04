@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { execFileSync, spawn } = require('node:child_process');
+const { execFileSync, spawn, spawnSync } = require('node:child_process');
 const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -137,4 +137,15 @@ test('서버가 트리클만 하고 절대 끝내지 않아도 하드 데드라�
   // 하드 데드라인은 ~3s. 소켓 타임아웃(2s)보다 위, 트리클이 "영원히" 계속되는 것보다는 훨씬 아래.
   assert.ok(result.elapsed < 5000, `expected hard-deadline exit well under 5s, took ${result.elapsed}ms`);
   assert.ok(result.elapsed > 2000, `expected the hard deadline (not the 2s socket timeout) to be what fired, took ${result.elapsed}ms`);
+});
+
+test('CCL_HOOK_URL 이 깨진 URL 이어도 exit 0 이고 stdout 은 비어 있다', () => {
+  const live = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-live-'));
+  const r = spawnSync(process.execPath, [path.join(__dirname, '..', 'codex-hook.js')], {
+    input: JSON.stringify({ hook_event_name: 'PreToolUse', session_id: 'badurl', cwd: 'D:\\x' }),
+    encoding: 'utf8',
+    env: { ...process.env, CCL_HOOK_URL: 'not a valid url::::', CCL_LIVE_DIR: live },
+  });
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, '');
 });

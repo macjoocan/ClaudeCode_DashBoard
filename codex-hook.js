@@ -58,15 +58,19 @@ function post(body, done) {
     done();
   };
 
-  let u;
-  try { u = new URL(HOOK_URL); } catch { return finish(); }
-  const data = Buffer.from(JSON.stringify(body), 'utf8');
-
   // timeout: 2000 은 소켓 "비활동" 타임아웃이라 활동이 있으면 계속 리셋된다.
   // 서버가 응답을 끝내지 않고 몇 바이트씩 계속 흘려보내면(trickle) 그 타임아웃은
   // 영원히 안 걸릴 수 있다. 그래서 어떤 소켓 이벤트가 오가든 상관없이 무조건
   // 끝내는 하드 데드라인을 따로 둔다. unref() 하면 안 된다 — 반드시 발화해야 한다.
+  //
+  // finish() 를 부를 수 있는 첫 코드(바로 아래 URL 파싱 실패 케이스)보다 반드시
+  // 먼저 선언해야 한다 — 그렇지 않으면 finish() 안의 clearTimeout(hardDeadline) 이
+  // hardDeadline 이 아직 초기화되기 전(TDZ) 에 실행되어 ReferenceError 로 죽는다.
   const hardDeadline = setTimeout(finish, 3000);
+
+  let u;
+  try { u = new URL(HOOK_URL); } catch { return finish(); }
+  const data = Buffer.from(JSON.stringify(body), 'utf8');
 
   const req = http.request({
     hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST',
