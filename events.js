@@ -160,6 +160,7 @@ function ingest(raw) {
 
     case 'Stop':
     case 'StopFailure':
+    case 'Interrupt':
       s.phase = 'idle'; s.tools.clear();
       out.text = clip(ev.last_assistant_message, 240);
       break;

@@ -29,3 +29,11 @@ test('permission_prompt 가 아닌 Notification 은 승인 대기로 바꾸지 �
   const live = events.liveState();
   assert.notEqual(live['sess-notif-2'].phase, 'waiting');
 });
+
+test('Interrupt 는 승인 대기 상태를 취소하고 idle 로 되돌린다', () => {
+  events.reset();
+  events.ingest({ hook_event_name: 'PermissionRequest', session_id: 'sess-interrupt-1', cwd: 'D:\\x' });
+  assert.equal(events.liveState()['sess-interrupt-1'].phase, 'waiting');
+  events.ingest({ hook_event_name: 'Interrupt', session_id: 'sess-interrupt-1', cwd: 'D:\\x' });
+  assert.equal(events.liveState()['sess-interrupt-1'].phase, 'idle');
+});

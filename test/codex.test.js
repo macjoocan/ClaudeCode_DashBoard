@@ -259,3 +259,10 @@ test('liveMap 은 깨진 파일을 건너뛴다', () => {
 test('liveMap 은 디렉터리가 없으면 빈 Map', () => {
   assert.equal(codex.liveMap('C:\\없는\\디렉터리').size, 0);
 });
+
+test('liveMap 은 at 값이 깨진(비숫자) 문자열이면 최대로 오래된 것으로 보고 제외한다', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-live-'));
+  fs.writeFileSync(path.join(dir, 'corrupt-at.json'), JSON.stringify({
+    sessionId: 'corrupt-at', status: 'busy', at: 'not-a-number' }), 'utf8');
+  assert.equal(codex.liveMap(dir).size, 0);
+});

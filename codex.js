@@ -48,10 +48,11 @@ function liveMap(dir) {
     let j;
     try { j = JSON.parse(fs.readFileSync(path.join(d, f), 'utf8')); } catch { continue; }
     if (!j || !j.sessionId) continue;
-    if (now - Number(j.at || 0) > LIVE_MAX_AGE) continue;
+    const at = Number(j.at || 0);
+    if (!Number.isFinite(at) || now - at > LIVE_MAX_AGE) continue;
     out.set(String(j.sessionId), {
       status: j.status === 'busy' || j.status === 'waiting' ? j.status : 'idle',
-      cwd: j.cwd || null, pid: j.pid || null, at: j.at || 0,
+      cwd: j.cwd || null, pid: j.pid || null, at,
     });
   }
   return out;
