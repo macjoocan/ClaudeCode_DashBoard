@@ -131,6 +131,47 @@
     });
   }
 
+  // ---- 복사 / 붙여넣기 ----
+  // xterm 은 Ctrl+V 를 ^V 로 바꿔 PTY 에 보내면서 keydown 을 무조건 cancel() 한다
+  // (vendor/xterm.js 의 _keyDown). preventDefault 가 걸리면 크롬이 네이티브 paste
+  // 이벤트를 만들지 않아서, xterm 이 스스로 걸어둔 paste 리스너까지 같이 죽는다.
+  // 그래서 커스텀 키 핸들러에서 false 를 돌려 그 경로를 통째로 비켜준다.
+  // 그러면 xterm 의 원래 붙여넣기 처리(bracketed paste 포함)가 그대로 살아난다.
+
+  function say(msg, isErr) { if (CC.toast) CC.toast(msg, isErr); }
+
+  // 문서에 포커스가 없으면 writeText 가 거부되므로 임시 textarea 로 되돌린다
+  function fallbackCopy(text) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '-1000px';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (e) {}
+  }
+
+  function writeClipboard(text) {
+    if (!text) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(function () { fallbackCopy(text); });
+    } else {
+      fallbackCopy(text);
+    }
+  }
+
+  // 선택이 있으면 복사하고 true. 없으면 아무것도 하지 않고 false
+  function copySelection(v) {
+    if (!v.term.hasSelection()) return false;
+    writeClipboard(v.term.getSelection());
+    v.term.clearSelection();
+    return true;
+  }
+
   function mount(info) {
     if (views.has(info.id)) return views.get(info.id);
 
@@ -165,6 +206,41 @@
     if (order.indexOf(info.id) < 0) order.push(info.id);
 
     el.addEventListener('mousedown', function () { focus(info.id, true); });
+
+    // Ctrl+V 는 xterm 의 preventDefault 를 비켜 네이티브 paste 를 살리고,
+    // Ctrl+C 는 선택이 있을 때만 복사한다 (없으면 평소대로 SIGINT).
+    term.attachCustomKeyEventHandler(function (ev) {
+      if (ev.type !== 'keydown') return true;
+      if (!ev.ctrlKey || ev.altKey || ev.metaKey) return true;
+      var k = (ev.key || '').toLowerCase();
+
+      if (k === 'v') return false;          // Ctrl+V / Ctrl+Shift+V
+
+      if (k === 'c') {
+        if (copySelection(v)) return false;
+        // Ctrl+Shift+C 로 왔는데 선택이 없으면 ^C 를 보내지 않는다
+        return !ev.shiftKey;
+      }
+      return true;
+    });
+
+    // 우클릭: 선택이 있으면 복사, 없으면 붙여넣기.
+    // 패인 머리글(⤢ ✕)에서는 브라우저 기본 메뉴를 남기려고 터미널 영역에만 건다.
+    body.addEventListener('contextmenu', function (ev) {
+      ev.preventDefault();
+      if (copySelection(v)) return;
+      if (!navigator.clipboard || !navigator.clipboard.readText) {
+        say('이 브라우저에서는 우클릭 붙여넣기를 쓸 수 없습니다. Ctrl+V 를 쓰세요.', true);
+        return;
+      }
+      navigator.clipboard.readText().then(function (text) {
+        // term.paste 를 쓴다 - Ctrl+V 와 같은 경로라 bracketed paste 가 똑같이 걸린다
+        if (text) v.term.paste(text);
+      }).catch(function () {
+        say('클립보드를 읽지 못했습니다. Ctrl+V 를 쓰세요.', true);
+      });
+    });
+
     term.onData(function (d) { sendMsg(v, { t: 'i', d: d }); });
     term.onResize(function (size) { sendMsg(v, { t: 'r', c: size.cols, r: size.rows }); });
 
