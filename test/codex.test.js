@@ -56,19 +56,20 @@ function makeFixtureDb() {
     id text, rollout_path text, cwd text, title text,
     first_user_message text, preview text,
     updated_at_ms integer, created_at_ms integer,
-    git_branch text, thread_source text, source text, archived integer
+    git_branch text, thread_source text, source text, archived integer,
+    tokens_used integer
   )`);
   db.exec(`create table thread_spawn_edges (
     parent_thread_id text, child_thread_id text, status text
   )`);
-  const ins = db.prepare(`insert into threads values (?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const ins = db.prepare(`insert into threads values (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   ins.run('aaa-111', 'C:\\r\\a.jsonl', '\\\\?\\D:\\proj\\App', '앱 작업',
-          '첫 프롬프트', '마지막', 2000, 1000, 'main', 'user', null, 0);
+          '첫 프롬프트', '마지막', 2000, 1000, 'main', 'user', null, 0, 12345);
   ins.run('bbb-222', 'C:\\r\\b.jsonl', '\\\\?\\D:\\proj\\App', 'x'.repeat(400),
           '서브 프롬프트', '미리보기', 3000, 1500, 'main', 'subagent',
-          '{"subagent":{"thread_spawn":{"parent_thread_id":"aaa-111","depth":1}}}', 0);
+          '{"subagent":{"thread_spawn":{"parent_thread_id":"aaa-111","depth":1}}}', 0, 6789);
   ins.run('ccc-333', 'C:\\r\\c.jsonl', '\\\\?\\D:\\proj\\Old', '보관됨',
-          '옛날', '옛날', 500, 400, 'main', 'user', null, 1);
+          '옛날', '옛날', 500, 400, 'main', 'user', null, 1, 100);
   db.close();
   return p;
 }
@@ -103,6 +104,11 @@ test('readThreads 는 source JSON 에서 부모 스레드를 뽑는다', () => {
 
 test('readThreads 는 DB 가 없으면 빈 배열', () => {
   assert.deepEqual(codex.readThreads('C:\\없는\\경로\\x.sqlite'), []);
+});
+
+test('readThreads 는 tokens_used 를 싣는다', () => {
+  const rows = codex.readThreads(makeFixtureDb());
+  assert.equal(typeof rows[0].tokens, 'number');
 });
 
 test('openReadOnly 는 폴백까지 이중으로 실패해도 temp 디렉터리를 남기지 않는다', () => {

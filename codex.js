@@ -60,7 +60,7 @@ function liveMap(dir) {
 
 const SELECT = `
   select id, rollout_path, cwd, title, first_user_message, preview,
-         updated_at_ms, created_at_ms, git_branch, thread_source, source
+         updated_at_ms, created_at_ms, git_branch, thread_source, source, tokens_used
     from threads
    where archived = 0
    order by updated_at_ms desc`;
@@ -122,6 +122,7 @@ function readThreads(dbPath) {
       rolloutPath: r.rollout_path || null,
       threadSource: r.thread_source || null,
       parentId: parentOf(r.source),
+      tokens: Number(r.tokens_used) || 0,
     }));
   } catch {
     return [];

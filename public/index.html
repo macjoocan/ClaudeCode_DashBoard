@@ -104,6 +104,7 @@
   .sl1{display:flex;gap:7px;align-items:center}
   .stitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
   .swhen{color:var(--dim2);font-size:11px;flex:none}
+  .susage{color:var(--dim2);font-size:11px;flex:none;font-variant-numeric:tabular-nums}
   .slast{color:var(--dim2);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;
     white-space:nowrap;margin:2px 0 0 16px}
   .slast::before{content:"\21b3 ";color:var(--accent);opacity:.65}
@@ -581,6 +582,7 @@
 <script>
 const $ = s => document.querySelector(s);
 let DATA = [], ENV = {}, TERMS = [];
+let USAGE = { projects: {}, sessions: {} };   // /api/usage 응답 - 별도 요청으로만 채워진다
 let TAB  = localStorage.getItem('ccl.tab')  || 'all';
 let MODE = localStorage.getItem('ccl.mode') || 'embed';   // embed | window
 let WIDE = localStorage.getItem('ccl.wide') === '1';
@@ -603,6 +605,32 @@ function stamp(ms){
 }
 const esc = window.escHtml;
 function statusLabel(l){ return !l ? '' : (l.status === 'busy' ? '작업 중' : '대기 중'); }
+
+// usage.js 의 fmt() 와 동일한 규칙 - 브라우저는 서버의 CommonJS 모듈을 그대로
+// require 할 수 없어(번들러가 없다) 표시 규칙만 그대로 옮겨온다.
+function fmtUsage(n){
+  const v = Number(n) || 0;
+  if (v >= 1e6) return (v / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (v >= 1e3) return Math.round(v / 1e3) + 'K';
+  return String(v);
+}
+function usageFor(s){
+  return (USAGE.sessions && USAGE.sessions[s.provider+':'+s.id]) || null;
+}
+function usageForProject(p){
+  return (USAGE.projects && USAGE.projects[p.key]) || null;
+}
+// Codex 는 threads.tokens_used 하나뿐이라 입력/출력/캐시 내역이 없다 - 그 차이를 title 로 드러낸다.
+function usageTitle(s, u){
+  if (s.provider === 'codex') return 'Codex 는 총량만 제공';
+  return '입력 '+fmtUsage(u.input)+' · 출력 '+fmtUsage(u.output)
+    +' · 캐시쓰기 '+fmtUsage(u.cacheWrite)+' · 캐시읽기 '+fmtUsage(u.cacheRead);
+}
+function usageSpan(s){
+  const u = usageFor(s);
+  if (!u || !u.billable) return '';
+  return '<span class="susage" title="'+esc(usageTitle(s,u))+'">'+esc(fmtUsage(u.billable))+'</span>';
+}
 
 async function post(p, body){
   const r = await fetch(p,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
@@ -629,6 +657,15 @@ async function load(){
   const j = await (await fetch('/api/projects',{cache:'no-store'})).json();
   DATA = j.projects; ENV = j.env;
   await loadTerms();
+}
+
+// 토큰 사용량은 Claude 쪽이 세션 파일을 통째로 읽어야 해서 비싸다.
+// 카드 렌더링을 막지 않게 별도로, 페이지 로드 때 한 번 + ↻ 눌렀을 때만 부른다.
+async function loadUsage(){
+  try{
+    USAGE = await (await fetch('/api/usage',{cache:'no-store'})).json();
+    render();
+  }catch(e){}
 }
 
 async function loadTerms(){
@@ -723,6 +760,7 @@ function sessionRow(p, s, emb){
     +   '<span class="stitle" title="'+esc(s.title||'')+'">'+esc(s.title || '(제목 없음)')+'</span>'
     +   (e ? '<span class="tag emb">대시보드</span>' : '')
     +   '<span class="swhen" title="'+stamp(s.mtime)+'">'+ago(s.mtime)+'</span>'
+    +   usageSpan(s)
     +   '<button class="icon '+(s.fav?'on':'')+'" data-fav="'+vk+'" title="즐겨찾기">'+(s.fav?'★':'☆')+'</button>'
     + '</div>'
     + (s.last && s.last !== s.title ? '<div class="slast" title="'+esc(s.last)+'">'+esc(s.last)+'</div>' : '')
@@ -743,6 +781,15 @@ function sessionGroup(p, list, emb, label, key){
     + ((!openAll && list.length>3) ? '<div class="more" data-expand="'+esc(key)+'">세션 '+(list.length-3)+'개 더 보기 ▾</div>' : '');
 }
 
+// 프로젝트 헤더에 붙는 사용량 합계 태그. 세션별과 달리 Claude/Codex 가 섞여
+// 합산되므로 입력/출력 내역은 없고 billable 합계와 캐시읽기 합계만 보여준다.
+function projectUsageTag(p){
+  const u = usageForProject(p);
+  if (!u || !u.billable) return '';
+  const title = '토큰 사용량(billable) 합계 · 캐시읽기 '+fmtUsage(u.cacheRead)+' 별도';
+  return '<span class="tag" title="'+esc(title)+'">토큰 '+esc(fmtUsage(u.billable))+'</span>';
+}
+
 function projectCard(p, ss, emb){
   const claudeSs = ss.filter(s => s.provider !== 'codex');
   const codexSs  = ss.filter(s => s.provider === 'codex');
@@ -761,6 +808,7 @@ function projectCard(p, ss, emb){
     +       (p.liveCount ? '<span class="tag run">● 실행 중 '+p.liveCount+'</span>' : '')
     +       (embN ? '<span class="tag emb">대시보드 '+embN+'</span>' : '')
     +       (p.favCount ? '<span class="tag">★ '+p.favCount+'</span>' : '')
+    +       projectUsageTag(p)
     +       (p.exists ? '' : '<span class="tag err">폴더 없음</span>')
     +     '</div>'
     +   '</div>'
@@ -1160,6 +1208,7 @@ CC.toast = toast;   // config-edit.js 가 쓴다
 $('#refresh').onclick = function(){
   if (TAB === 'graph') return CC.harness.loadGraph($('#graphwrap'));
   if (TAB === 'cfg')   return CC.harness.loadConfig($('#cfgwrap')).then(updateCfgBadge);
+  loadUsage();   // 사용량도 ↻ 로 다시 부른다
   return load();
 };
 function updateCfgBadge(){
@@ -1205,6 +1254,7 @@ CC.live.loadStatus().then(function(){ CC.live.connect(); });
 document.querySelectorAll('.tab').forEach(function(b){ b.classList.toggle('on', b.dataset.tab === TAB); });
 $('#layout').textContent = WIDE ? '카드' : '넓게';
 load();
+loadUsage();   // 카드 렌더링과 별개로 - 도착하면 render() 가 다시 그려서 채운다
 // 구성은 경고 개수를 탭 뱃지에 띄우기 위해 시작할 때 한 번 읽어둔다
 CC.harness.loadConfig($('#cfgwrap')).then(updateCfgBadge);
 setInterval(load, 60000);

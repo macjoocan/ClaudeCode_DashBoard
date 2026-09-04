@@ -15,6 +15,7 @@ const hooksInstall = require('./hooks-install');
 const codexHooks = require('./codex-hooks-install.js');
 const cfgWrite = require('./config-write');
 const codex = require('./codex.js');
+const usage = require('./usage.js');
 
 const HOOK_URL = `http://${'127.0.0.1'}:${Number(process.env.CC_LAUNCHER_PORT || 7788)}/api/hook`;
 
@@ -282,6 +283,7 @@ function scan() {
       fav: favs.has('codex:' + s.id),
       subagents: null,
       threadSource: s.threadSource, parentId: s.parentId,
+      tokens: s.tokens,
     });
   }
 
@@ -505,6 +507,27 @@ const server = http.createServer(async (req, res) => {
         projects: scan(),
         env: { claude: CLAUDE_BIN, codex: CODEX_BIN, wt: WT_BIN, projectsDir: PROJECTS_DIR },
       });
+    }
+
+    // 사용량은 Claude 쪽이 파일 전체 읽기라 비싸다. scan() 과 분리해 여기서만 계산한다.
+    if (url.pathname === '/api/usage') {
+      const out = { projects: {}, sessions: {} };
+      for (const p of scan()) {
+        let billable = 0, cacheRead = 0;
+        for (const s of p.sessions) {
+          let u;
+          if (s.provider === 'codex') {
+            u = Object.assign(usage.empty(), { billable: s.tokens || 0 });
+          } else {
+            u = usage.forClaudeFile(path.join(PROJECTS_DIR, s.slug, s.id + '.jsonl'));
+          }
+          out.sessions[s.provider + ':' + s.id] = u;
+          billable += u.billable;
+          cacheRead += u.cacheRead;
+        }
+        out.projects[p.key] = { billable, cacheRead };
+      }
+      return json(res, 200, out);
     }
 
     // 실행 상태만 (jsonl 스캔 없음 → 수 ms). 짧은 주기로 폴링해도 부담 없다.
