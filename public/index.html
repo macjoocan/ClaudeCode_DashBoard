@@ -168,6 +168,9 @@
   .lay button.on{background:var(--accent);border-color:var(--accent);color:#1a1008;font-weight:700}
   .lay button:not(.on):hover{color:var(--fg);border-color:var(--line2)}
   .lay .lb{color:var(--dim2);font-size:11px;margin-right:3px}
+  .clip{color:var(--dim2);font-size:10.5px;margin-left:8px;padding-left:9px;
+    border-left:1px solid var(--line);cursor:help;white-space:nowrap;flex:none}
+  .clip kbd{font-size:10px;padding:0 4px}
 
   /* ---------------- 대화 패널 ---------------- */
   #panel{position:fixed;top:0;right:0;bottom:0;width:min(620px,100%);z-index:30;
@@ -847,6 +850,32 @@ function render(){
 }
 
 /* ---------------------------------------------------------- 터미널 탭 바 */
+// 복사·붙여넣기 도움말 (title 속성에 넣을 여러 줄 문자열)
+const CLIP_HELP = [
+  'cmd 와 같은 방식입니다.',
+  '',
+  '[ 선택 ]',
+  '드래그            보통은 이대로 선택됩니다',
+  'Shift + 드래그     선택이 안 될 때 (TUI 가 마우스를 쓰는 중)',
+  '  Claude Code 가 실행 중이면 마우스 입력을 앱이 먼저 가져갑니다.',
+  '  그때는 Shift 를 누른 채 끌면 텍스트가 잡힙니다.',
+  '더블클릭 단어 · 트리플클릭 줄',
+  'Ctrl+Shift+A      전체 선택',
+  '',
+  '[ 복사 ]',
+  'Ctrl+C            선택이 있으면 복사, 없으면 중단(SIGINT)',
+  'Ctrl+Shift+C      항상 복사',
+  'Ctrl+Insert       복사',
+  '우클릭             선택이 있으면 복사',
+  '',
+  '[ 붙여넣기 ]',
+  'Ctrl+V            붙여넣기',
+  'Ctrl+Shift+V      붙여넣기',
+  'Shift+Insert      붙여넣기',
+  '우클릭             선택이 없으면 붙여넣기',
+  '가운데 클릭         붙여넣기'
+].join('\n');
+
 function renderTermBar(){
   const bar = $('#termbar');
   const cur = CC.term.current;
@@ -882,7 +911,9 @@ function renderTermBar(){
     +   oriBtn('cols','가로','좌우로 나란히 - 긴 명령·넓은 출력에 좋다')
     +   oriBtn('rows','세로','위아래로 쌓기 - 대화 흐름을 길게 보기 좋다')
     +   oriBtn('grid','가로세로','정사각형에 가깝게 배치')
-    + '</div>';
+    + '</div>'
+    + '<span class="clip" title="' + CLIP_HELP + '">'
+    +   '복사 <kbd>Ctrl+C</kbd> · 붙여넣기 <kbd>Ctrl+V</kbd> · 선택 안 되면 <kbd>Shift+드래그</kbd> ⓘ</span>';
   $('#termempty').hidden = TERMS.length > 0;
   $('#termhost').hidden = TERMS.length === 0;
 }

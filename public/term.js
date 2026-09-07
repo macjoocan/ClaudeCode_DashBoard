@@ -169,6 +169,7 @@
     term.onResize(function (size) { sendMsg(v, { t: 'r', c: size.cols, r: size.rows }); });
 
     paneHead(v);
+    wireClipboard(v, body);
     connect(v);
     return v;
   }
@@ -192,6 +193,125 @@
   function escText(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  // ------------------------------------------------------------ 복사 / 붙여넣기
+  //
+  // xterm.js 는 붙여넣기(브라우저 paste 이벤트)는 알아서 처리하지만,
+  // Ctrl+C 는 선택이 있든 없든 항상 \x03(SIGINT) 로 보낸다.
+  // cmd / Windows Terminal 규칙에 맞춘다:
+  //
+  //   Ctrl+C          선택이 있으면 복사, 없으면 SIGINT (그대로 통과)
+  //   Ctrl+V          붙여넣기 (xterm 기본 - 건드리지 않는다)
+  //   Ctrl+Shift+C    항상 복사
+  //   Ctrl+Shift+V    붙여넣기 (클립보드 직접 읽기)
+  //   Ctrl+Insert     복사        Shift+Insert  붙여넣기   (고전 윈도 방식)
+  //   Ctrl+Shift+A    전체 선택   (Ctrl+A 는 TUI 가 줄 처음 이동에 쓰므로 건드리지 않는다)
+  //   우클릭          선택이 있으면 복사, 없으면 붙여넣기 (cmd 빠른 편집 방식)
+  //   가운데 클릭      붙여넣기
+  //
+  // 더블클릭(단어) · 트리플클릭(줄) 선택은 xterm 기본 기능이라 그대로 쓴다.
+
+  function note(msg, isErr) {
+    if (CC.toast) CC.toast(msg, isErr);
+  }
+
+  function writeClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(function () { return true; },
+        function () { return legacyCopy(text); });
+    }
+    return Promise.resolve(legacyCopy(text));
+  }
+
+  // 클립보드 API 가 막힌 경우를 위한 예비 수단
+  function legacyCopy(text) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch (e) { return false; }
+  }
+
+  function copySelection(v) {
+    var text = v.term.getSelection();
+    if (!text) return;
+    writeClipboard(text).then(function (ok) {
+      if (ok) {
+        var n = text.length;
+        note('복사됨 · ' + (n > 999 ? (n / 1000).toFixed(1) + 'k' : n) + '자');
+        v.term.clearSelection();      // 다음 Ctrl+C 는 SIGINT 로 가게 한다
+      } else {
+        note('복사 실패 - Ctrl+Shift+C 로 다시 시도해 보세요', true);
+      }
+    });
+  }
+
+  function pasteClipboard(v) {
+    if (!navigator.clipboard || !navigator.clipboard.readText) {
+      note('이 브라우저에서는 Ctrl+V 로 붙여넣어 주세요', true);
+      return;
+    }
+    navigator.clipboard.readText().then(function (text) {
+      if (!text) return;
+      v.term.paste(text);             // 괄호 붙여넣기(bracketed paste) 규약을 지킨다
+      v.term.focus();
+    }, function () {
+      note('클립보드를 읽지 못했습니다 - Ctrl+V 를 쓰세요', true);
+    });
+  }
+
+  function wireClipboard(v, body) {
+    var term = v.term;
+
+    term.attachCustomKeyEventHandler(function (e) {
+      if (e.type !== 'keydown') return true;
+      var ctrl = e.ctrlKey && !e.altKey && !e.metaKey;
+      var k = (e.key || '').toLowerCase();
+
+      if (ctrl && !e.shiftKey && k === 'c') {
+        // 선택이 있으면 복사하고 PTY 로 보내지 않는다. 없으면 평소대로 SIGINT.
+        if (term.hasSelection()) { copySelection(v); return false; }
+        return true;
+      }
+      if (ctrl && e.shiftKey && k === 'c') { copySelection(v); return false; }
+      if (ctrl && !e.shiftKey && k === 'insert') { copySelection(v); return false; }
+
+      // 붙여넣기.
+      //
+      // xterm 은 Ctrl+V 를 제어문자 \x16 으로 만들어 PTY 로 보내고 preventDefault 까지
+      // 해버려서, 브라우저의 기본 붙여넣기가 아예 일어나지 않는다.
+      // 여기서 false 를 돌려주면 xterm 이 손을 떼고 preventDefault 도 하지 않으므로
+      // 브라우저가 평소처럼 붙여넣고, 그 paste 이벤트를 xterm 이 받아 PTY 로 보낸다.
+      // (클립보드 읽기 권한이 필요 없다)
+      if (ctrl && k === 'v') return false;                    // Ctrl+V, Ctrl+Shift+V
+      if (!ctrl && e.shiftKey && k === 'insert') return false; // Shift+Insert
+
+      if (ctrl && e.shiftKey && k === 'a') { term.selectAll(); return false; }
+
+      return true;   // 그 밖의 키는 전부 PTY 로
+    });
+
+    // 우클릭: 선택 있으면 복사, 없으면 붙여넣기
+    body.addEventListener('contextmenu', function (e) {
+      e.preventDefault();
+      if (term.hasSelection()) copySelection(v);
+      else pasteClipboard(v);
+    });
+
+    // 가운데 클릭 붙여넣기
+    body.addEventListener('auxclick', function (e) {
+      if (e.button === 1) { e.preventDefault(); pasteClipboard(v); }
+    });
+    body.addEventListener('mousedown', function (e) {
+      if (e.button === 1) e.preventDefault();   // 가운데 클릭 자동 스크롤 방지
     });
   }
 
@@ -233,9 +353,23 @@
   // 포커스: 해당 터미널을 활성으로 만들고, 안 보이면 앞으로 끌어온다
   function focus(id, fromClick) {
     if (!views.has(id)) return;
+    var wasActive = active === id;
     active = id;
     var n = slots();
-    if (order.indexOf(id) >= n) {
+    var visible = order.indexOf(id) < n;
+
+    // 마우스로 클릭했고 이미 화면에 보이는 패인이면 레이아웃을 다시 잡지 않는다.
+    // apply() 는 fit() 을 호출하는데, 드래그로 텍스트를 선택하는 중에 크기가
+    // 다시 계산되면 선택이 풀린다.
+    if (fromClick && visible) {
+      if (!wasActive) {
+        views.forEach(function (v2, k) { v2.el.classList.toggle('active', k === id); });
+        if (onChange) onChange();
+      }
+      return;
+    }
+
+    if (!visible) {
       order.splice(order.indexOf(id), 1);
       order.unshift(id);
     }
@@ -306,6 +440,8 @@
     setOrient: setOrient, getOrient: getOrient,
     stop: stop, close: close, drop: drop,
     list: listLocal,
+    // 디버깅·테스트용: 특정 터미널의 xterm 인스턴스
+    xterm: function (id) { var v = views.get(id); return v ? v.term : null; },
     get current() { return active; },
     get visibleIds() { return order.slice(0, slots()); },
     has: function (id) { return views.has(id); }
