@@ -13,6 +13,7 @@ const harness = require('./harness');
 const events = require('./events');
 const hooksInstall = require('./hooks-install');
 const cfgWrite = require('./config-write');
+const tokens = require('./tokens');
 
 const HOOK_URL = `http://${'127.0.0.1'}:${Number(process.env.CC_LAUNCHER_PORT || 7788)}/api/hook`;
 
@@ -603,6 +604,11 @@ const server = http.createServer(async (req, res) => {
         default: throw new Error('알 수 없는 작업: ' + op);
       }
       return json(res, 200, Object.assign({ ok: true, op }, out));
+    }
+
+    // ------- 토큰 사용량 -------
+    if (url.pathname === '/api/tokens') {
+      return json(res, 200, tokens.usage());
     }
 
     // ------- 하네스 구성 / 그래프 -------
