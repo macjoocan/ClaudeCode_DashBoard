@@ -7,15 +7,35 @@
 
 ## 실행
 
+**바탕화면 바로가기 한 번 클릭**이 기본이다. 처음 받은 PC 에서는:
+
 ```
-run.bat                 # 콘솔 창 + 브라우저 자동 열림
-wscript run-hidden.vbs  # 창 없이 백그라운드 (시작프로그램 등록용)
+wscript MakeShortcut.vbs     # 바탕화면에 "Claude 세션 런처" 바로가기 생성 (한 번만)
 ```
 
-포트 변경: `set CC_LAUNCHER_PORT=9000`
-의존성(node-pty, ws)은 첫 실행 때 자동으로 설치된다.
+그 다음부터는 바로가기를 누르면 된다. `Launch.vbs` 가 하는 일:
 
-> 스크립트 이름이 `start.bat` 이 아닌 이유: cmd 의 내장 `start` 명령과 헷갈려
+1. 서버가 **이미 돌고 있으면** 브라우저만 연다 (포트 충돌 없음)
+2. 안 돌고 있으면 의존성을 확인하고 **창 없이** 서버를 띄운 뒤, 응답할 때까지 기다렸다가 브라우저를 연다
+3. Node.js 가 없으면 안내 창을 띄운다
+
+| 파일 | 하는 일 |
+|---|---|
+| `Launch.vbs` | 클릭 한 번 실행 (콘솔 창 없음). 바로가기가 이걸 가리킨다 |
+| `Stop.vbs` | 이 폴더의 서버만 골라 종료. 다른 node 프로그램은 건드리지 않는다 |
+| `MakeShortcut.vbs` | 바탕화면 바로가기 생성 (PC 마다 한 번) |
+| `run.bat` | 콘솔 창을 띄워 로그를 보며 실행 (문제 확인용) |
+| `run-hidden.vbs` | 창 없이 서버만 시작 (브라우저 안 열음) |
+
+- 작업표시줄 고정: 바로가기 우클릭 → 작업 표시줄에 고정
+- 윈도 시작 시 자동 실행: `Launch.vbs` 바로가기를 `shell:startup` 폴더에 넣기
+- 포트 변경: `set CC_LAUNCHER_PORT=9000`
+- 의존성(node-pty, ws)은 첫 실행 때 자동 설치된다
+
+> `.vbs` 파일은 **UTF-16 + BOM** 으로 저장한다. WSH 는 BOM 없는 파일을 ANSI 로 읽어서
+> 한글 메시지가 깨진다.
+>
+> 배치 스크립트 이름이 `start.bat` 이 아닌 이유: cmd 의 내장 `start` 명령과 헷갈려
 > 엉뚱하게 실행되는 사고를 막기 위해 `run.bat` 으로 뒀다.
 
 ## 탭 7개
@@ -354,6 +374,10 @@ public/timeline.js   실황 워터폴 타임라인 (레인·구간 패킹)
 public/md.js         대화 보기용 마크다운 렌더러
 public/vendor/       xterm.js 로컬 사본 (CDN 없이 오프라인 동작)
 focus-window.ps1     외부 터미널 창 포커스 (ASCII 전용 - PS 5.1 인코딩 문제 회피)
+Launch.vbs           클릭 한 번 실행기 (이미 켜져 있으면 브라우저만)
+Stop.vbs             이 폴더의 서버만 종료
+MakeShortcut.vbs     바탕화면 바로가기 생성
+icon.ico             바로가기 아이콘 (16~256px)
 pins.json            상단 고정한 프로젝트 (자동 생성)
 favorites.json       ★ 즐겨찾기한 세션 (자동 생성)
 ```

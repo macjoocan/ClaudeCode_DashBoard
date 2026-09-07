@@ -1,3 +1,5 @@
 node_modules/
 pins.json
 favorites.json
+# 바로가기는 절대 경로를 담으므로 각자 MakeShortcut.vbs 로 만든다
+*.lnk
