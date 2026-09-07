@@ -23,15 +23,34 @@
   var orient = 'grid';       // grid(가로세로) | cols(가로=좌우) | rows(세로=위아래)
   var onChange = null;
 
+  var GUT = 6;               // 패인 사이 간격(px). 이 틈이 곧 크기 조절 손잡이다.
+  var MINPX = 140;           // 패인 최소 크기
+  var sizes = {};            // "orient:칸수" -> { c:[비율...], r:[비율...] }
+  var savedOrder = null;     // 사용자가 드래그로 정한 순서 (localStorage)
+  var orderRestored = false;
+  var guts = null;           // 손잡이 오버레이 (grid 배치에 끼지 않게 absolute)
+
   function init(hostEl, changeCb) {
     CC.host = hostEl;
     onChange = changeCb;
     layout = Number(localStorage.getItem('ccl.layout') || 1);
     orient = localStorage.getItem('ccl.orient') || 'grid';
+    sizes = readJson('ccl.sizes') || {};
+    savedOrder = readJson('ccl.order') || null;
+  }
+
+  function readJson(k) {
+    try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; }
+  }
+  function writeJson(k, v) {
+    try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {}
   }
 
   function setLayout(n) {
-    layout = Number(n) || 1;
+    // 0 은 '전체'다. `Number(n) || 1` 로 쓰면 0 이 1 로 바뀌어 전체가 1분할이 된다
+    // (새로고침 뒤엔 문자열 '0' 이라 통과해서, 클릭할 때만 어긋났다).
+    var v = Number(n);
+    layout = (isFinite(v) && v >= 0) ? v : 1;
     localStorage.setItem('ccl.layout', String(layout));
     apply();
   }
@@ -50,6 +69,57 @@
     return Math.min(layout, order.length);
   }
 
+  // 배치 방향
+  //   cols(가로) : 좌우로 나란히          [A][B][C]
+  //   rows(세로) : 위아래로 쌓기           [A]
+  //                                        [B]
+  //   grid(가로세로) : 정사각형에 가깝게    [A][B]
+  //                                        [C][D]
+  function geometry(n) {
+    if (orient === 'cols') return { cols: Math.max(1, n), rows: 1 };
+    if (orient === 'rows') return { cols: 1, rows: Math.max(1, n) };
+    // 항상 정사각형에 가깝게. n=3 이면 2x2 가 되어 가로 배치와 구분된다.
+    var cols = Math.max(1, Math.ceil(Math.sqrt(n)));
+    return { cols: cols, rows: Math.max(1, Math.ceil(n / cols)) };
+  }
+
+  // ------------------------------------------------------------ 패인 크기 (비율)
+  //
+  // 칸 수마다 따로 기억한다. 2분할에서 잡은 비율이 4분할로 갔다 와도 그대로 남는다.
+
+  function sizeKey(geo) { return orient + ':' + geo.cols + 'x' + geo.rows; }
+
+  function ones(n) { var a = []; for (var i = 0; i < n; i++) a.push(1); return a; }
+
+  function sizeFor(geo) {
+    var k = sizeKey(geo);
+    var s = sizes[k];
+    if (!s || !s.c || s.c.length !== geo.cols || !s.r || s.r.length !== geo.rows) {
+      s = { c: ones(geo.cols), r: ones(geo.rows) };
+      sizes[k] = s;
+    }
+    return s;
+  }
+
+  function applyTemplate(geo) {
+    var host = CC.host;
+    var s = sizeFor(geo);
+    var track = function (f) { return 'minmax(0,' + f + 'fr)'; };
+    host.style.display = 'grid';
+    host.style.position = 'relative';
+    host.style.gap = GUT + 'px';
+    host.style.gridTemplateColumns = s.c.map(track).join(' ');
+    host.style.gridTemplateRows = s.r.map(track).join(' ');
+  }
+
+  function fitVisible(n) {
+    order.slice(0, n).forEach(function (id) {
+      var v = views.get(id);
+      if (!v) return;
+      try { v.fit.fit(); } catch (e) {}
+    });
+  }
+
   // 레이아웃을 적용하고 보이는 패인만 fit 한다
   function apply() {
     var host = CC.host;
@@ -63,31 +133,15 @@
       order.unshift(active);
     }
 
-    // 배치 방향
-    //   cols(가로) : 좌우로 나란히          [A][B][C]
-    //   rows(세로) : 위아래로 쌓기           [A]
-    //                                        [B]
-    //   grid(가로세로) : 정사각형에 가깝게    [A][B]
-    //                                        [C][D]
-    var cols, rows;
-    if (orient === 'cols') { cols = Math.max(1, n); rows = 1; }
-    else if (orient === 'rows') { cols = 1; rows = Math.max(1, n); }
-    else {
-      // 항상 정사각형에 가깝게. n=3 이면 2x2 가 되어 가로 배치와 구분된다.
-      cols = Math.max(1, Math.ceil(Math.sqrt(n)));
-      rows = Math.max(1, Math.ceil(n / cols));
-    }
+    var geo = geometry(n);
+    applyTemplate(geo);
 
-    host.style.display = 'grid';
-    host.style.gap = '6px';
-    host.style.gridTemplateColumns = 'repeat(' + cols + ', minmax(0,1fr))';
-    host.style.gridTemplateRows = 'repeat(' + rows + ', minmax(0,1fr))';
-
-    // 격자에서 마지막 줄이 비면 마지막 패인이 남은 칸을 채운다 (구멍 방지)
+    // 격자에서 마지막 줄이 비면 마지막 패인이 남은 칸을 채운다 (구멍 방지).
+    // 'auto / -1' 로는 안 된다 - 시작 선이 자동으로 잡혀 한 칸만 차지한다. span 을 센다.
     var lastSpan = 1;
     if (orient === 'grid' && n > 1) {
-      var rem = n % cols;
-      if (rem !== 0) lastSpan = cols - rem + 1;
+      var rem = n % geo.cols;
+      if (rem !== 0) lastSpan = geo.cols - rem + 1;
     }
 
     order.forEach(function (id, idx) {
@@ -101,14 +155,184 @@
         ? 'span ' + lastSpan : '';
     });
 
-    // 레이아웃이 바뀐 뒤 실제 크기가 정해지면 fit
+    // 레이아웃이 바뀐 뒤 실제 크기가 정해지면 fit + 손잡이 재배치
     requestAnimationFrame(function () {
-      order.slice(0, n).forEach(function (id) {
-        var v = views.get(id);
-        if (!v) return;
-        try { v.fit.fit(); } catch (e) {}
-      });
+      fitVisible(n);
+      layoutGuts(geo);
       if (onChange) onChange();
+    });
+  }
+
+  // ------------------------------------------------------------ 크기 조절 손잡이
+  //
+  // 손잡이는 grid 자식이 아니라 absolute 오버레이다. grid 자식으로 넣으면 패인
+  // 자동 배치에 끼어들어 칸이 밀린다.
+
+  function trackPx(prop) {
+    // 계산된 값은 'minmax(0,1fr)' 이 아니라 해결된 픽셀('440px 6px ...')로 나온다
+    var s = (getComputedStyle(CC.host)[prop] || '').split(' ');
+    var out = [];
+    for (var i = 0; i < s.length; i++) {
+      var n = parseFloat(s[i]);
+      if (isFinite(n)) out.push(n);
+    }
+    return out;
+  }
+
+  function layoutGuts(geo) {
+    var host = CC.host;
+    if (!host) return;
+    if (!guts) {
+      guts = document.createElement('div');
+      guts.className = 'termguts';
+      host.appendChild(guts);
+      wireGuts();
+    }
+    var nc = geo.cols > 1 ? geo.cols - 1 : 0;
+    var nr = geo.rows > 1 ? geo.rows - 1 : 0;
+    if (!nc && !nr) { guts.innerHTML = ''; return; }
+
+    var w = trackPx('gridTemplateColumns');
+    var h = trackPx('gridTemplateRows');
+    if (w.length !== geo.cols || h.length !== geo.rows) return;   // 아직 크기가 안 잡혔다
+
+    var html = '', acc, j;
+    // 열 경계: 두 칸 사이 gap 의 가운데
+    acc = 0;
+    for (j = 0; j < nc; j++) {
+      acc += w[j];
+      html += '<div class="gut gc" data-gc="' + j + '" style="left:'
+            + (acc + j * GUT + GUT / 2) + 'px" title="좌우 크기 조절 (더블클릭하면 균등)"></div>';
+    }
+    acc = 0;
+    for (j = 0; j < nr; j++) {
+      acc += h[j];
+      html += '<div class="gut gr" data-gr="' + j + '" style="top:'
+            + (acc + j * GUT + GUT / 2) + 'px" title="위아래 크기 조절 (더블클릭하면 균등)"></div>';
+    }
+    guts.innerHTML = html;
+  }
+
+  function wireGuts() {
+    guts.addEventListener('dblclick', function (e) {
+      var g = e.target.closest && e.target.closest('.gut');
+      if (!g) return;
+      var geo = geometry(slots());
+      var s = sizeFor(geo);
+      if (g.classList.contains('gc')) s.c = ones(geo.cols); else s.r = ones(geo.rows);
+      writeJson('ccl.sizes', sizes);
+      apply();
+    });
+
+    guts.addEventListener('pointerdown', function (e) {
+      var g = e.target.closest && e.target.closest('.gut');
+      if (!g || e.button !== 0) return;
+
+      var isCol = g.classList.contains('gc');
+      var idx = Number(isCol ? g.dataset.gc : g.dataset.gr);
+      var n = slots();
+      var geo = geometry(n);
+      var s = sizeFor(geo);
+      var arr = isCol ? s.c : s.r;
+      var px = trackPx(isCol ? 'gridTemplateColumns' : 'gridTemplateRows');
+      if (px.length !== arr.length || idx + 1 >= arr.length) return;
+
+      var a = px[idx], total = a + px[idx + 1];
+      var pair = arr[idx] + arr[idx + 1];
+      var start = isCol ? e.clientX : e.clientY;
+      var lastFit = 0;
+
+      g.classList.add('on');
+      document.body.classList.add(isCol ? 'gcdrag' : 'grdrag');
+
+      function move(ev) {
+        var d = (isCol ? ev.clientX : ev.clientY) - start;
+        var na = Math.max(MINPX, Math.min(total - MINPX, a + d));
+        arr[idx] = pair * (na / total);
+        arr[idx + 1] = pair - arr[idx];
+        applyTemplate(geo);
+        // fit 은 무거우니 드래그 중에는 솎아낸다. 안 하면 캔버스가 잘려 보인다.
+        var now = Date.now();
+        if (now - lastFit > 80) { lastFit = now; fitVisible(n); }
+        layoutGuts(geo);
+      }
+      function up() {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', up);
+        g.classList.remove('on');
+        document.body.classList.remove('gcdrag', 'grdrag');
+        writeJson('ccl.sizes', sizes);
+        fitVisible(n);
+        layoutGuts(geo);
+        if (onChange) onChange();
+      }
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
+      e.preventDefault();
+    });
+  }
+
+  function resetSizes() {
+    sizes = {};
+    writeJson('ccl.sizes', sizes);
+    apply();
+  }
+
+  // ------------------------------------------------------------ 위치 바꾸기 (드래그)
+
+  // id 를 targetId 자리로 밀어넣는다 (스왑이 아니라 삽입)
+  function moveTo(id, targetId) {
+    var from = order.indexOf(id), to = order.indexOf(targetId);
+    if (from < 0 || to < 0 || from === to) return;
+    order.splice(from, 1);
+    order.splice(to, 0, id);
+    writeJson('ccl.order', order);
+    apply();
+    if (onChange) onChange();
+  }
+
+  // 머리글을 잡고 끌면 다른 패인 자리로 옮긴다.
+  // preventDefault 를 하지 않는다 - 그러면 mousedown 이 막혀 포커스가 안 간다.
+  function wireDrag(v) {
+    v.head.addEventListener('pointerdown', function (e) {
+      if (e.button !== 0) return;
+      if (e.target.closest && e.target.closest('button')) return;   // 버튼은 버튼대로
+      var id = v.info.id;
+      var sx = e.clientX, sy = e.clientY;
+      var moved = false, overId = null;
+
+      function mark(tid) {
+        if (tid === overId) return;
+        var prev = overId && views.get(overId);
+        if (prev) prev.el.classList.remove('dropto');
+        overId = tid;
+        var next = overId && views.get(overId);
+        if (next) next.el.classList.add('dropto');
+      }
+
+      function move(ev) {
+        if (!moved) {
+          if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 5) return;
+          moved = true;
+          v.el.classList.add('drag');
+          document.body.classList.add('panedrag');
+        }
+        var el = document.elementFromPoint(ev.clientX, ev.clientY);
+        var pane = el && el.closest ? el.closest('.termpane') : null;
+        var tid = pane && pane.dataset.term !== id ? pane.dataset.term : null;
+        mark(tid);
+      }
+      function up() {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', up);
+        v.el.classList.remove('drag');
+        document.body.classList.remove('panedrag');
+        var target = overId;
+        mark(null);
+        if (moved && target) moveTo(id, target);
+      }
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
     });
   }
 
@@ -170,24 +394,32 @@
 
     paneHead(v);
     wireClipboard(v, body);
+    wireDrag(v);
     connect(v);
     return v;
   }
 
-  // 패인 머리글: 세션 이름 · 프로젝트 · 상태 + 단독 보기 / 닫기
+  // 패인 머리글: 세션 이름 · 프로젝트 · 상태 + 새로고침 / 재시작 / 단독 보기 / 닫기
   function paneHead(v) {
     var i = v.info;
     var parts = String(i.cwd || '').split(/[\\/]/).filter(Boolean);
     var proj = parts.length ? parts[parts.length - 1] : i.cwd;
     var dot = !i.alive ? '' : (i.status === 'busy' ? 'busy' : 'idle');
     var st = !i.alive ? '종료됨' : (i.status === 'busy' ? '작업 중' : '대기 중');
+    var rs = i.restarts ? ' · 재시작 ' + i.restarts + '회' : '';
+    var id = escText(i.id);
     v.head.innerHTML =
-      '<span class="st ' + dot + '"></span>'
+      '<span class="grip" title="끌어서 자리 옮기기">⠿</span>'
+      + '<span class="st ' + dot + '"></span>'
       + '<span class="nm">' + escText(i.name || i.title || proj) + '</span>'
-      + '<span class="pj">' + escText(proj) + ' · ' + st + '</span>'
+      + '<span class="pj">' + escText(proj) + ' · ' + st + rs + '</span>'
       + '<span class="sp"></span>'
-      + '<button class="pbtn" data-solo="' + escText(i.id) + '" title="이 터미널만 크게 보기">⤢</button>'
-      + '<button class="pbtn" data-closeterm="' + escText(i.id) + '" title="' + (i.alive ? '세션 종료' : '닫기') + '">✕</button>';
+      + '<button class="pbtn" data-reloadterm="' + id + '"'
+      +   ' title="새로고침 - 화면만 다시 붙인다. 세션은 건드리지 않는다">↻</button>'
+      + '<button class="pbtn warn" data-restartterm="' + id + '"'
+      +   ' title="재시작 - CLI 를 끄고 같은 세션으로 다시 켠다 (--resume). 응답 중이던 내용은 사라진다">⟳</button>'
+      + '<button class="pbtn" data-solo="' + id + '" title="이 터미널만 크게 보기">⤢</button>'
+      + '<button class="pbtn" data-closeterm="' + id + '" title="' + (i.alive ? '세션 종료' : '닫기') + '">✕</button>';
   }
 
   function escText(s) {
@@ -323,6 +555,8 @@
       try { m = JSON.parse(ev.data); } catch (e) { return; }
       if (m.t === 'o') {
         v.term.write(m.d);
+      } else if (m.t === 'reset') {
+        v.term.reset();                    // 서버가 PTY 를 갈아끼웠다
       } else if (m.t === 'm') {
         v.info = m.info; v.alive = m.info.alive;
         paneHead(v);
@@ -402,8 +636,23 @@
       }
     });
     views.forEach(function (v, id) { if (!seen[id]) drop(id); });
+
+    // 드래그로 정해둔 순서는 첫 동기화에서 한 번만 복원한다.
+    // 매번 하면 apply() 가 활성 패인을 앞으로 끌어온 것을 4초마다 되돌려버린다.
+    if (!orderRestored && order.length) { restoreOrder(); orderRestored = true; }
+
     if (!active || !views.has(active)) active = order.length ? order[0] : null;
     apply();
+  }
+
+  function restoreOrder() {
+    if (!savedOrder || !savedOrder.length) return;
+    var rank = {};
+    savedOrder.forEach(function (id, i) { rank[id] = i; });
+    var known = [], fresh = [];
+    order.forEach(function (id) { (rank[id] === undefined ? fresh : known).push(id); });
+    known.sort(function (a, b) { return rank[a] - rank[b]; });
+    order = known.concat(fresh);          // 저장에 없는 새 터미널은 뒤에 붙인다
   }
 
   function drop(id) {
@@ -416,6 +665,37 @@
     var i = order.indexOf(id);
     if (i >= 0) order.splice(i, 1);
     if (active === id) active = order.length ? order[0] : null;
+  }
+
+  // 새로고침: 화면만 다시 붙인다. 서버가 스크롤백을 다시 보내주므로 내용은 그대로다.
+  // WebSocket 이 조용히 죽었거나 출력이 깨져 보일 때 쓴다. 세션은 건드리지 않는다.
+  function reload(id) {
+    var v = views.get(id);
+    if (!v) return;
+    try {
+      if (v.ws) { v.ws.onclose = null; v.ws.onmessage = null; v.ws.close(); }
+    } catch (e) {}
+    v.term.reset();
+    connect(v);
+    requestAnimationFrame(function () { try { v.fit.fit(); } catch (e) {} });
+  }
+
+  // 재시작: CLI 프로세스만 갈아끼운다. 터미널 id 가 유지되므로 자리·크기가 그대로다.
+  function restart(id) {
+    var v = views.get(id);
+    if (!v) return Promise.resolve();
+    v.term.write('\r\n\x1b[38;5;101m[재시작 중...]\x1b[m\r\n');
+    return post('/api/term/restart', { id: id }).then(function (j) {
+      if (j.error) {
+        v.term.write('\r\n\x1b[38;5;131m[재시작 실패: ' + j.error + ']\x1b[m\r\n');
+        return;
+      }
+      v.info = j.term;
+      v.alive = j.term.alive;
+      paneHead(v);
+      reload(id);              // 새 PTY 에 다시 붙는다
+      if (onChange) onChange();
+    });
   }
 
   function post(path, body) {
@@ -439,7 +719,11 @@
     setLayout: setLayout, getLayout: getLayout, slots: slots,
     setOrient: setOrient, getOrient: getOrient,
     stop: stop, close: close, drop: drop,
+    reload: reload, restart: restart,
+    moveTo: moveTo, resetSizes: resetSizes,
     list: listLocal,
+    // 탭 바가 패인 순서를 따라가게 한다
+    orderOf: function (id) { var i = order.indexOf(id); return i < 0 ? 9999 : i; },
     // 디버깅·테스트용: 특정 터미널의 xterm 인스턴스
     xterm: function (id) { var v = views.get(id); return v ? v.term : null; },
     get current() { return active; },

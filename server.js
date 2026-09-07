@@ -640,6 +640,13 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, term: terminals.info(t) });
     }
 
+    if (url.pathname === '/api/term/restart' && req.method === 'POST') {
+      const b = await readBody(req);
+      const t = await terminals.restart(String(b.id || ''), { claudeBin: CLAUDE_BIN });
+      if (!t) throw new Error('터미널이 없습니다');
+      return json(res, 200, { ok: true, term: terminals.info(t) });
+    }
+
     if (url.pathname === '/api/term/kill' && req.method === 'POST') {
       const b = await readBody(req);
       return json(res, 200, { ok: terminals.kill(String(b.id || '')) });

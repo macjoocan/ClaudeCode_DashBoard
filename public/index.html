@@ -167,8 +167,29 @@
   .termpane .ph2 .pbtn{background:none;border:none;color:var(--dim2);cursor:pointer;
     font-size:12px;line-height:1;padding:2px 4px;border-radius:4px}
   .termpane .ph2 .pbtn:hover{color:var(--accent2);background:var(--panel)}
+  .termpane .ph2 .pbtn.warn:hover{color:var(--busy)}
   .termpane .pb2{flex:1;min-height:0;padding:6px 2px 4px 8px;overflow:hidden}
   .termpane .xterm{height:100%}
+
+  /* 자리 옮기기 - 머리글을 잡고 끈다 */
+  .termpane .ph2{user-select:none;cursor:grab}
+  .termpane .ph2 .grip{color:var(--dim2);font-size:12px;letter-spacing:-2px;flex:none}
+  .termpane.drag{opacity:.5}
+  .termpane.dropto{border-color:var(--accent2)}
+  .termpane.dropto .ph2{background:var(--accent2);color:var(--bg)}
+  body.panedrag,body.panedrag *{cursor:grabbing!important;user-select:none!important}
+
+  /* 크기 조절 손잡이 - 패인 사이 틈에 얹는 absolute 오버레이.
+     grid 자식으로 넣으면 패인 자동 배치에 끼어들어 칸이 밀린다. */
+  .termguts{position:absolute;inset:0;pointer-events:none;z-index:5}
+  .gut{position:absolute;pointer-events:auto;border-radius:3px;background:transparent;
+    transition:background .12s}
+  .gut.gc{top:0;bottom:0;width:11px;margin-left:-5.5px;cursor:col-resize}
+  .gut.gr{left:0;right:0;height:11px;margin-top:-5.5px;cursor:row-resize}
+  .gut:hover{background:var(--line2)}
+  .gut.on{background:var(--accent)}
+  body.gcdrag,body.gcdrag *{cursor:col-resize!important;user-select:none!important}
+  body.grdrag,body.grdrag *{cursor:row-resize!important;user-select:none!important}
   .termempty{flex:1;display:flex;flex-direction:column;gap:12px;
     align-items:center;justify-content:center;color:var(--dim);text-align:center;line-height:1.9}
   /* 분할 선택기 */
@@ -955,7 +976,10 @@ function renderTermBar(){
   const cur = CC.term.current;
   const vis = CC.term.visibleIds;
   const lay = CC.term.getLayout();
-  const html = TERMS.map(function(t){
+  // 탭 순서를 패인 순서에 맞춘다. 드래그로 자리를 바꾸면 탭도 같이 움직인다.
+  const html = TERMS.slice()
+    .sort(function(a,b){ return CC.term.orderOf(a.id) - CC.term.orderOf(b.id); })
+    .map(function(t){
     const parts = t.cwd.split(/[\\/]/).filter(Boolean);
     const proj = parts.length ? parts[parts.length-1] : t.cwd;
     const label = t.name || t.title || proj;
@@ -985,9 +1009,13 @@ function renderTermBar(){
     +   oriBtn('cols','가로','좌우로 나란히 - 긴 명령·넓은 출력에 좋다')
     +   oriBtn('rows','세로','위아래로 쌓기 - 대화 흐름을 길게 보기 좋다')
     +   oriBtn('grid','가로세로','정사각형에 가깝게 배치')
+    +   '<button data-resetsize="1" title="드래그로 바꾼 패인 크기를 균등하게 되돌린다">크기 초기화</button>'
     + '</div>'
     + '<span class="clip" title="' + CLIP_HELP + '">'
-    +   '복사 <kbd>Ctrl+C</kbd> · 붙여넣기 <kbd>Ctrl+V</kbd> · 선택 안 되면 <kbd>Shift+드래그</kbd> ⓘ</span>';
+    +   '복사 <kbd>Ctrl+C</kbd> · 붙여넣기 <kbd>Ctrl+V</kbd> · 선택 안 되면 <kbd>Shift+드래그</kbd> ⓘ</span>'
+    + '<span class="clip" title="패인 머리글(⠿)을 잡고 다른 패인 위로 끌면 자리가 바뀝니다.&#10;'
+    +   '패인 사이 틈을 끌면 크기가 바뀌고, 더블클릭하면 그 줄만 균등해집니다.">'
+    +   '자리 <kbd>머리글 드래그</kbd> · 크기 <kbd>경계 드래그</kbd> ⓘ</span>';
   $('#termempty').hidden = TERMS.length > 0;
   $('#termhost').hidden = TERMS.length === 0;
 }
@@ -1076,6 +1104,7 @@ document.addEventListener('click', async function(e){
 
   const t = e.target.closest('[data-tab],[data-mode],[data-expand],[data-pin],[data-fav],[data-open],'
     + '[data-act],[data-focus],[data-view],[data-goterm],[data-closeterm],[data-lay],[data-ori],[data-solo],'
+    + '[data-reloadterm],[data-restartterm],[data-resetsize],'
     + '[data-openfile],[data-hookinstall],[data-hookuninstall],#t-new,.m.thinking');
   if (!t) return;
 
@@ -1116,6 +1145,29 @@ document.addEventListener('click', async function(e){
   }
   if (t.dataset.solo){
     e.stopPropagation(); CC.term.solo(t.dataset.solo); renderTermBar(); return;
+  }
+  if (t.dataset.resetsize){
+    CC.term.resetSizes(); toast('패인 크기를 균등하게 되돌렸습니다'); return;
+  }
+  if (t.dataset.reloadterm){
+    e.stopPropagation();
+    CC.term.reload(t.dataset.reloadterm);
+    toast('화면을 다시 붙였습니다');
+    return;
+  }
+  if (t.dataset.restartterm){
+    e.stopPropagation();
+    const id = t.dataset.restartterm;
+    const inf = TERMS.find(x => x.id === id);
+    // 응답을 받고 있는 중이면 그 응답은 사라진다. 물어본다.
+    if (inf && inf.alive && inf.status === 'busy'
+        && !confirm('작업 중인 세션입니다.\n\n재시작하면 지금 받고 있는 응답이 사라집니다.'
+                  + '\n대화 기록은 --resume 으로 이어집니다.\n\n재시작할까요?')) return;
+    t.disabled = true;
+    try{ await CC.term.restart(id); await loadTerms(); }
+    catch(err){ toast('재시작 실패: ' + err.message, true); }
+    t.disabled = false;
+    return;
   }
   if (t.id === 't-new'){
     const p = DATA[0];

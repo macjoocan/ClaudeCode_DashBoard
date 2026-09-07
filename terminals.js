@@ -63,11 +63,22 @@ function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model })
     cols: p.cols, rows: p.rows,
     proc: p,
     buf: '',
+    restarts: 0,
     clients: new Set(),
   };
   terms.set(id, t);
+  wire(t, p);
+  return t;
+}
 
+// PTY 하나를 터미널에 배선한다. create 와 restart 가 같이 쓴다.
+//
+// `t.proc !== p` 검사가 핵심이다. 재시작하면 옛 프로세스의 onExit 이 kill 직후가
+// 아니라 **새 프로세스를 꽂은 뒤에** 도착할 수 있다. 그때 걸러내지 않으면 방금 띄운
+// 터미널이 "종료됨"으로 표시된다.
+function wire(t, p) {
   p.onData(d => {
+    if (t.proc !== p) return;
     t.buf += d;
     if (t.buf.length > SCROLLBACK) t.buf = t.buf.slice(-SCROLLBACK);
     t.lastAt = Date.now();
@@ -75,12 +86,60 @@ function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model })
   });
 
   p.onExit(({ exitCode }) => {
+    if (t.proc !== p) return;
     t.exitCode = exitCode == null ? 0 : exitCode;
     t.exitedAt = Date.now();
     send(t, { t: 'x', code: t.exitCode });
   });
+}
 
-  return t;
+// 같은 자리에서 CLI 프로세스만 갈아끼운다.
+//
+// 터미널 id 를 그대로 쓰기 때문에 패인 위치·크기·탭 순서가 유지된다.
+// 세션 ID 를 확보한 상태면 `--resume` 으로 대화를 이어서 켠다. 세션 기록은 파일에
+// 계속 쌓이고 있으므로 재시작해도 대화가 남는다. 다만 **응답 중이던 내용은 사라진다.**
+function restart(id, { claudeBin }) {
+  const t = terms.get(id);
+  if (!t) return Promise.resolve(null);
+
+  const dying = t.proc;
+  const wait = new Promise(resolve => {
+    if (t.exitCode != null) return resolve();
+    let done = false;
+    const fin = () => { if (!done) { done = true; resolve(); } };
+    try { dying.onExit(fin); } catch { fin(); }
+    try { dying.kill(); } catch { fin(); }
+    // 안 죽어도 계속 간다. 여기서 멈추면 버튼이 먹통이 된다.
+    setTimeout(fin, 3000);
+  });
+
+  return wait.then(() => {
+    // 이어서 켤 세션이 있는지 본다. 시작 직후 죽어 세션 ID 를 못 받았으면 새로 시작한다.
+    const sid = t.sessionId;
+    const action = sid ? 'resume' : 'new';
+    const p = pty.spawn(claudeBin, claudeArgs(action, sid), {
+      name: 'xterm-256color',
+      cols: t.cols, rows: t.rows,
+      cwd: t.cwd,
+      env: cleanEnv(),
+      useConpty: true,
+    });
+
+    t.proc = p;
+    t.pid = p.pid;
+    t.action = action;
+    t.exitCode = null;
+    t.exitedAt = null;
+    t.startedAt = Date.now();
+    t.lastAt = Date.now();
+    t.buf = '';                       // 옛 프로세스의 출력은 버린다
+    t.restarts = (t.restarts || 0) + 1;
+    wire(t, p);
+
+    send(t, { t: 'reset' });          // 붙어 있는 화면을 비우게 한다
+    send(t, { t: 'm', info: info(t) });
+    return t;
+  });
 }
 
 function send(t, msg) {
@@ -111,6 +170,7 @@ function info(t) {
     startedAt: t.startedAt, lastAt: t.lastAt,
     alive: t.exitCode == null,
     exitCode: t.exitCode, exitedAt: t.exitedAt,
+    restarts: t.restarts || 0,
     status: live ? live.status : null,
     name: live ? live.name : null,
     clients: t.clients.size,
@@ -196,4 +256,4 @@ function killAll() {
   for (const t of terms.values()) { if (t.exitCode == null) { try { t.proc.kill(); } catch {} } }
 }
 
-module.exports = { create, list, get, info, write, resize, kill, close, attach, killAll };
+module.exports = { create, restart, list, get, info, write, resize, kill, close, attach, killAll };
