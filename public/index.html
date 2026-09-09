@@ -98,6 +98,10 @@
   .listbar button.on{background:var(--panel3);border-color:var(--accent);color:var(--accent2)}
   .listbar .sep{width:1px;height:16px;background:var(--line);margin:0 5px}
   .listbar .cnt{margin-left:auto;color:var(--dim2)}
+  .listbar button.pick{background:var(--panel3);border-color:var(--line2);color:var(--fg)}
+  .listbar button.pick:hover{border-color:var(--accent);color:var(--accent2)}
+  .listbar button.pick:disabled{opacity:.4;cursor:default}
+  .listbar button.pick:disabled:hover{border-color:var(--line2);color:var(--fg)}
 
   /* 조밀 - 카드는 그대로 두고 여백과 본문만 줄인다 */
   .grid.dense{gap:9px;grid-template-columns:repeat(auto-fill,minmax(290px,1fr))}
@@ -149,6 +153,13 @@
   .grow{flex:1;min-width:0}
 
   /* ---------------- 세션 행 ---------------- */
+  .glabel{cursor:pointer;user-select:none;display:flex;gap:5px;align-items:center}
+  .glabel:hover{color:var(--accent2)}
+  .glabel .gcar{color:var(--dim2);font-size:9px;width:8px}
+  .glabel:hover .gcar{color:var(--accent2)}
+  .glabel .gn{background:var(--panel3);color:var(--dim2);border-radius:4px;
+    padding:0 5px;font-size:9.5px;font-weight:600}
+  .glabel.gfold{opacity:.62}
   .glabel{padding:7px 13px 4px;font-size:10.5px;font-weight:700;letter-spacing:.3px;
     color:var(--dim2);text-transform:uppercase;background:var(--panel2);border-top:1px solid var(--line)}
   .s{padding:9px 13px;border-bottom:1px solid #221f1b;cursor:pointer}
@@ -952,12 +963,21 @@ function sessionRow(p, s, emb){
     + '</div></div>';
 }
 
-// 프로젝트 카드 안의 provider 묶음 하나 (이름표 + 세션 목록 + 묶음별 더 보기)
+// 프로젝트 카드 안의 provider 묶음 하나 (이름표 + 세션 목록 + 묶음별 더 보기).
+// 카드 전체와 별개로 이 묶음만 접을 수 있다 - Claude 만 보고 Codex 는 접어두는 식.
 function sessionGroup(p, list, emb, label, key){
   if (!list.length) return '';
+  const gk = 'g:' + key;                       // 카드 키와 섞이지 않게 앞에 표시
+  const fold = collapsed.has(gk);
+  const head = '<div class="glabel'+(fold?' gfold':'')+'" data-fold="'+esc(gk)+'"'
+    + ' title="'+(fold?'펼치기':'접기')+' - '+esc(label)+' 세션 '+list.length+'개">'
+    + '<span class="gcar">'+(fold?'▸':'▾')+'</span>'+esc(label)
+    + '<span class="gn">'+list.length+'</span></div>';
+  if (fold) return head;
+
   const openAll = expanded.has(key) || terms().length > 0;
   const vis = openAll ? list : list.slice(0, 3);
-  return '<div class="glabel">'+esc(label)+'</div>'
+  return head
     + '<div class="slist">'+vis.map(s=>sessionRow(p,s,emb)).join('')+'</div>'
     + ((!openAll && list.length>3) ? '<div class="more" data-expand="'+esc(key)+'">세션 '+(list.length-3)+'개 더 보기 ▾</div>' : '');
 }
@@ -982,10 +1002,18 @@ function renderListBar(shown, foldable, foldedN){
   bar.hidden = false;
   const b = (attr, v, txt, cur, tip) =>
     '<button data-'+attr+'="'+v+'" class="'+(cur===v?'on':'')+'" title="'+tip+'">'+txt+'</button>';
+  const codexOn = !!(ENV && ENV.codex);
   bar.innerHTML =
-      '<span class="lb">접기</span>'
+      '<button class="pick" data-pick="claude"'
+    +   ' title="폴더를 골라 그 안에서 새 Claude 세션을 시작합니다.&#10;'
+    +   '세션 기록이 없는 새 폴더도 됩니다.">📁 폴더 지정 · Claude</button>'
+    + '<button class="pick" data-pick="codex"' + (codexOn ? '' : ' disabled')
+    +   ' title="' + (codexOn ? '폴더를 골라 그 안에서 새 Codex 세션을 시작합니다.'
+                              : 'codex 가 설치되지 않았습니다') + '">Codex</button>'
+    + '<div class="sep"></div>'
+    + '<span class="lb">접기</span>'
     + '<button data-fold="all" title="모든 카드를 머리글만 남기고 접는다">전체 접기</button>'
-    + '<button data-fold="none" title="모두 펼친다">전체 펼치기</button>'
+    + '<button data-fold="none" title="카드와 묶음을 모두 펼친다">전체 펼치기</button>'
     + '<div class="sep"></div>'
     + '<span class="lb">보기</span>'
     + b('listview','card','카드',VIEW,'지금까지의 카드 보기')
@@ -1167,9 +1195,14 @@ function render(){
       : '<div class="empty">지금 실행 중인 세션이 없습니다.</div>');
 }
 
-// 지금 화면에 있는 카드들의 키 (전체 접기/펼치기 대상)
-function visibleKeys(){
+// 전체 접기는 카드만 접는다. 묶음까지 접어두면 카드 하나를 펼쳤을 때
+// 안이 텅 비어 보여서 놀란다.
+function cardKeys(){
   return [...document.querySelectorAll('#list .cfold')].map(b => b.dataset.fold);
+}
+// 전체 펼치기는 카드든 묶음이든 다 편다
+function allFoldKeys(){
+  return [...document.querySelectorAll('#list [data-fold]')].map(b => b.dataset.fold);
 }
 
 /* ---------------------------------------------------------- 터미널 탭 바 */
@@ -1346,7 +1379,7 @@ document.addEventListener('click', async function(e){
   const t = e.target.closest('[data-tab],[data-mode],[data-expand],[data-pin],[data-fav],[data-open],'
     + '[data-act],[data-focus],[data-view],[data-goterm],[data-closeterm],[data-lay],[data-ori],[data-solo],'
     + '[data-reloadterm],[data-restartterm],[data-resetsize],[data-movepane],'
-    + '[data-fold],[data-listview],[data-sort],'
+    + '[data-fold],[data-listview],[data-sort],[data-pick],'
     + '[data-openfile],[data-hookinstall],[data-hookuninstall],#t-new,.m.thinking');
   if (!t) return;
 
@@ -1384,12 +1417,34 @@ document.addEventListener('click', async function(e){
     return;
   }
 
+  // ---- 폴더 지정해서 실행 ----
+  if (t.dataset.pick){
+    const provider = t.dataset.pick;
+    const label = provider === 'codex' ? 'Codex' : 'Claude';
+    t.disabled = true;
+    const was = t.textContent;
+    t.textContent = '폴더 고르는 중…';
+    try{
+      // 윈도 기본 폴더 창이 뜬다. 마지막에 고른 곳에서 시작한다.
+      const j = await post('/api/pickfolder', { start: localStorage.getItem('ccl.lastpick') || '' });
+      if (!j.cancelled && j.path){
+        localStorage.setItem('ccl.lastpick', j.path);
+        const name = j.path.split(/[\\/]/).filter(Boolean).pop() || j.path;
+        await launch('new', j.path, null, name, provider);
+        toast((j.known ? '' : '새 폴더 · ') + name + ' 에서 ' + label + ' 새 세션을 시작했습니다');
+      }
+    }catch(err){ toast('폴더 실행 실패: ' + err.message, true); }
+    t.disabled = false;
+    t.textContent = was;
+    return;
+  }
+
   // ---- 목록 접기 / 보기 방식 / 정렬 ----
   if (t.dataset.fold !== undefined){
     e.stopPropagation();                  // 카드 클릭(대화 보기)으로 번지지 않게
     const k = t.dataset.fold;
-    if (k === 'all')       visibleKeys().forEach(x => collapsed.add(x));
-    else if (k === 'none') visibleKeys().forEach(x => collapsed.delete(x));
+    if (k === 'all')       cardKeys().forEach(x => collapsed.add(x));
+    else if (k === 'none') allFoldKeys().forEach(x => collapsed.delete(x));
     else if (collapsed.has(k)) collapsed.delete(k);
     else collapsed.add(k);
     saveCollapsed();

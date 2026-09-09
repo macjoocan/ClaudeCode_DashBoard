@@ -448,6 +448,40 @@ function focusWindow(pid) {
   });
 }
 
+// 윈도 기본 폴더 선택 창을 띄우고 고른 경로를 돌려준다.
+// 브라우저에는 진짜 폴더 경로를 주는 표준 방법이 없다(<input webkitdirectory> 는
+// 파일 이름만 준다). 그래서 서버가 네이티브 대화상자를 띄운다.
+//
+// 스크립트는 ASCII 로만 쓴다. PS 5.1 은 BOM 없는 입력을 ANSI 로 읽어 한글이 깨진다.
+// 한국어 안내는 서버 쪽 메시지로 처리한다.
+function pickFolder(start) {
+  const safeStart = start && fs.existsSync(start) ? String(start).replace(/'/g, "''") : '';
+  const ps = [
+    'Add-Type -AssemblyName System.Windows.Forms;',
+    '$d = New-Object System.Windows.Forms.FolderBrowserDialog;',
+    '$d.Description = "Pick a project folder to run Claude Code in";',
+    '$d.ShowNewFolderButton = $true;',
+    safeStart ? `$d.SelectedPath = '${safeStart}';` : '',
+    // 대화상자가 브라우저 뒤로 숨지 않게 맨 앞 폼을 소유자로 준다
+    '$top = New-Object System.Windows.Forms.Form;',
+    '$top.TopMost = $true; $top.ShowInTaskbar = $false;',
+    '$top.Size = New-Object System.Drawing.Size(1,1);',
+    '$r = $d.ShowDialog($top);',
+    '$top.Dispose();',
+    'if ($r -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.SelectedPath) }',
+  ].filter(Boolean).join(' ');
+
+  return new Promise(resolve => {
+    execFile('powershell.exe', ['-NoProfile', '-STA', '-Command', ps],
+      { timeout: 180000, windowsHide: true, encoding: 'utf8' },
+      (err, stdout) => {
+        const p = String(stdout || '').trim();
+        if (!p) return resolve(null);              // 취소했거나 시간 초과
+        resolve(p);
+      });
+  });
+}
+
 function openFolder(cwd) {
   if (!fs.existsSync(cwd)) throw new Error(`폴더가 없습니다: ${cwd}`);
   spawn('explorer.exe', [cwd], { detached: true, stdio: 'ignore' }).unref();
@@ -598,6 +632,22 @@ const server = http.createServer(async (req, res) => {
       const b = await readBody(req);
       const info = await focusWindow(Number(b.pid));
       return json(res, 200, { ok: true, info });
+    }
+
+    // 폴더 선택 창. 고른 경로와 함께 "여기에 이미 세션이 있는지"도 알려준다.
+    if (url.pathname === '/api/pickfolder' && req.method === 'POST') {
+      const b = await readBody(req);
+      const picked = await pickFolder(b.start);
+      if (!picked) return json(res, 200, { ok: true, cancelled: true });
+      if (!fs.existsSync(picked)) throw new Error(`폴더가 없습니다: ${picked}`);
+      let known = false;
+      try {
+        const slug = picked.replace(/[\\/:]/g, '-');
+        known = fs.existsSync(path.join(PROJECTS_DIR, slug))
+             || fs.readdirSync(PROJECTS_DIR).some(d =>
+                  d.toLowerCase() === slug.toLowerCase());
+      } catch {}
+      return json(res, 200, { ok: true, path: picked, known });
     }
 
     if (url.pathname === '/api/open' && req.method === 'POST') {
