@@ -460,7 +460,7 @@ function graph(projects, cfg, terms, projectsDir) {
       }
 
       add({ id: sid, kind: 'session', label: s.title || '(제목 없음)', sessionId: s.id,
-            slug: s.slug, live: !!s.live, status: s.live ? s.live.status : null,
+            slug: s.slug, provider: s.provider, live: !!s.live, status: s.live ? s.live.status : null,
             embedded: !!emb, termId: emb ? emb.id : null,
             mtime: s.mtime, fav: !!s.fav, sizeKB: s.sizeKB, project: p.name, cwd: p.cwd,
             subagentCalls: Object.values(subs).reduce((a, b) => a + b, 0) });
@@ -487,7 +487,8 @@ function graph(projects, cfg, terms, projectsDir) {
     const proj = projects.find(p => normPath(p.cwd) === normPath(t.cwd));
     const sid = 's:term:' + t.id;
     add({ id: sid, kind: 'session', label: t.name || t.title || '(새 세션)',
-          sessionId: t.sessionId, live: true, status: t.status, embedded: true, termId: t.id,
+          sessionId: t.sessionId, provider: t.provider || 'claude', live: true, status: t.status,
+          embedded: true, termId: t.id,
           mtime: t.lastAt, fresh: true, project: proj ? proj.name : t.cwd, cwd: t.cwd,
           subagentCalls: 0 });
     if (proj) edges.push({ from: 'p:' + proj.key, to: sid, kind: 'session' });

@@ -160,14 +160,18 @@ function ingest(raw) {
 
     case 'Stop':
     case 'StopFailure':
+    case 'Interrupt':
       s.phase = 'idle'; s.tools.clear();
       out.text = clip(ev.last_assistant_message, 240);
       break;
 
     case 'Notification':
+    case 'PermissionRequest':
       out.text = ev.notification_type || null;
-      // 권한 승인 대기 = 사람이 봐야 하는 상태
-      if (ev.notification_type === 'permission_prompt') s.phase = 'waiting';
+      // 권한 승인 대기 = 사람이 봐야 하는 상태.
+      // Claude 는 Notification 이벤트에 notification_type: 'permission_prompt' 로 실어 보내고,
+      // Codex 는 별도의 PermissionRequest 이벤트 자체가 승인 요청이라 이름만으로 판정한다.
+      if (name === 'PermissionRequest' || ev.notification_type === 'permission_prompt') s.phase = 'waiting';
       break;
 
     case 'PreCompact':

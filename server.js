@@ -2,6 +2,18 @@
 // ~/.claude/projects 를 스캔해 세션 목록을, ~/.claude/sessions 를 읽어 실행 상태를 만들고,
 // 클릭하면 Windows Terminal 에 해당 프로젝트 폴더로 claude 를 띄운다.
 
+// node:sqlite 는 아직 실험 API 라 로드될 때마다 ExperimentalWarning 을 찍는다.
+// run.bat 로 띄우면 시작할 때마다 콘솔 첫 줄이 경고라 사용자가 오류로 읽는다.
+// --no-warnings 로 통째로 끄지 않는 이유: 진짜 봐야 할 deprecation 경고까지 사라진다.
+// Node 가 부트스트랩에서 붙여 둔 기본 출력 리스너를 떼고, SQLite 실험 경고만
+// 삼키는 우리 리스너를 대신 붙인다. codex.js(→ node:sqlite) 를 require 하기 전에
+// 실행돼야 하므로 반드시 이 파일 맨 위에 있어야 한다.
+process.removeAllListeners('warning');
+process.on('warning', w => {
+  if (w.name === 'ExperimentalWarning' && /SQLite/i.test(w.message || '')) return;
+  console.error(w.stack || String(w));
+});
+
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -12,8 +24,11 @@ const terminals = require('./terminals');
 const harness = require('./harness');
 const events = require('./events');
 const hooksInstall = require('./hooks-install');
+const codexHooks = require('./codex-hooks-install.js');
 const cfgWrite = require('./config-write');
-const tokens = require('./tokens');
+const codex = require('./codex.js');
+const usage = require('./usage.js');   // 세션 하나의 사용량 (카드·대화 헤더)
+const tokens = require('./tokens');    // 전체 합계 (헤더 바: 오늘 / 최근 5시간)
 
 const HOOK_URL = `http://${'127.0.0.1'}:${Number(process.env.CC_LAUNCHER_PORT || 7788)}/api/hook`;
 
@@ -36,6 +51,7 @@ const SAFE_SLUG = /^[A-Za-z0-9._\-]+$/;
 const SAFE_ID = /^[A-Za-z0-9\-]+$/;
 
 const CLAUDE_BIN = findClaudeBin();
+const CODEX_BIN = codex.findCodexBin();
 const WT_BIN = findBin('wt.exe');
 
 function findBin(name) {
@@ -179,6 +195,7 @@ function liveSessions() {
     if (!o || !o.sessionId || !o.pid) continue;
     if (!pidAlive(o.pid)) continue;
     bySession.set(o.sessionId, {
+      provider: 'claude',   // /api/live 에서 Codex 상태와 한 맵에 섞이므로 출처를 남긴다
       pid: o.pid,
       status: o.status || 'idle',          // busy | idle
       name: o.name || null,
@@ -239,6 +256,7 @@ function scan() {
       if (!p.gitBranch && info.gitBranch) p.gitBranch = info.gitBranch;
       p.sessions.push({
         id, slug: d.name,
+        provider: 'claude',
         mtime: stat.mtimeMs,
         sizeKB: Math.round(stat.size / 1024),
         branch: info.gitBranch,
@@ -253,6 +271,36 @@ function scan() {
     }
   }
 
+  // Codex 세션을 같은 프로젝트 맵에 병합한다. 키가 cwd 소문자라
+  // 같은 폴더면 Claude 카드와 자연히 합쳐진다.
+  const codexLive = codex.liveMap();
+  for (const s of codex.sessions()) {
+    if (!s.cwd) continue;
+    const key = s.cwd.toLowerCase();
+    if (!projects.has(key)) {
+      projects.set(key, {
+        key, cwd: s.cwd, name: path.basename(s.cwd) || s.cwd,
+        exists: fs.existsSync(s.cwd),
+        gitBranch: s.branch, sessions: [],
+      });
+    }
+    const p = projects.get(key);
+    if (!p.gitBranch && s.branch) p.gitBranch = s.branch;
+    let sizeKB = 0;
+    try { sizeKB = Math.round(fs.statSync(s.rolloutPath).size / 1024); } catch {}
+    p.sessions.push({
+      id: s.id, slug: null, provider: 'codex',
+      mtime: s.mtime, sizeKB,
+      branch: s.branch, version: null,
+      title: s.title, firstPrompt: s.firstPrompt, last: s.last,
+      live: codexLive.get(s.id) || null,
+      fav: favs.has('codex:' + s.id),
+      subagents: null,
+      threadSource: s.threadSource, parentId: s.parentId,
+      tokens: s.tokens,
+    });
+  }
+
   const pins = loadPins();
   const list = [...projects.values()];
   for (const p of list) {
@@ -263,6 +311,7 @@ function scan() {
     p.mtime = p.sessions[0] ? p.sessions[0].mtime : 0;
     p.liveCount = p.sessions.filter(s => s.live).length;
     p.busyCount = p.sessions.filter(s => s.live && s.live.status === 'busy').length;
+    p.waitCount = p.sessions.filter(s => s.live && s.live.status === 'waiting').length;
     p.favCount = p.sessions.filter(s => s.fav).length;
     p.pinned = pins.includes(p.key);
   }
@@ -352,11 +401,20 @@ function claudeCommand(action, sessionId, extra) {
   return parts.join(' ');
 }
 
-function launch({ action, cwd, sessionId, title, extra }) {
+// claudeCommand 와 형제 함수. codex CLI 를 외부 터미널에서 실행할 명령 문자열을 만든다.
+function codexCommand(action, sessionId) {
+  const q = s => `'${String(s).replace(/'/g, "''")}'`;
+  if (!CODEX_BIN) throw new Error('codex 를 찾을 수 없습니다 (npm i -g @openai/codex)');
+  return [`& ${q(CODEX_BIN)}`, ...codex.codexArgs(action, sessionId)].join(' ');
+}
+
+function launch({ action, cwd, sessionId, title, extra, provider }) {
   if (!cwd || !fs.existsSync(cwd)) throw new Error(`폴더가 없습니다: ${cwd}`);
   if ((action === 'resume' || action === 'fork') && !SAFE_ID.test(String(sessionId || '')))
     throw new Error('세션 ID 가 올바르지 않습니다');
-  const inner = claudeCommand(action, sessionId, extra);
+  const inner = provider === 'codex'
+    ? codexCommand(action, sessionId)
+    : claudeCommand(action, sessionId, extra);
   const tabTitle = title || path.basename(cwd);
 
   if (WT_BIN) {
@@ -462,22 +520,73 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/projects') {
       return json(res, 200, {
         projects: scan(),
-        env: { claude: CLAUDE_BIN, wt: WT_BIN, projectsDir: PROJECTS_DIR },
+        env: { claude: CLAUDE_BIN, codex: CODEX_BIN, wt: WT_BIN, projectsDir: PROJECTS_DIR },
       });
     }
 
+    // 사용량은 Claude 쪽이 파일 전체 읽기라 비싸다. scan() 과 분리해 여기서만 계산한다.
+    if (url.pathname === '/api/usage') {
+      const out = { projects: {}, sessions: {} };
+      // Codex 는 rollout 파일 끝의 token_count 레코드를 읽어야 Claude 와 같은 정의의
+      // billable 이 나온다. rolloutPath 는 scan() 결과에 없으므로 여기서 한 번만 만든다
+      // (codex.sessions() 는 DB stamp 캐시라 값싸다).
+      const rollouts = new Map();
+      for (const s of codex.sessions()) if (s.rolloutPath) rollouts.set(s.id, s.rolloutPath);
+
+      for (const p of scan()) {
+        let billable = 0, cacheRead = 0, approx = false;
+        for (const s of p.sessions) {
+          let u = null;
+          if (s.provider === 'codex') {
+            const rp = rollouts.get(s.id);
+            if (rp && codex.isInsideSessions(rp)) u = usage.forCodexFile(rp);
+            // rollout 을 못 읽으면 threads.tokens_used 로 물러선다. 그 값은 캐시 입력을
+            // 포함한 총량이라 Claude 의 billable 과 같은 자로 잰 값이 아니다.
+            // approx 로 표시해서 UI 툴팁이 그 사실을 말하게 한다.
+            if (!u) u = Object.assign(usage.empty(), { billable: s.tokens || 0, approx: true });
+          } else {
+            u = usage.forClaudeFile(path.join(PROJECTS_DIR, s.slug, s.id + '.jsonl'));
+          }
+          out.sessions[s.provider + ':' + s.id] = u;
+          billable += u.billable;
+          cacheRead += u.cacheRead;
+          if (u.approx && u.billable) approx = true;
+        }
+        out.projects[p.key] = { billable, cacheRead, approx };
+      }
+      return json(res, 200, out);
+    }
+
     // 실행 상태만 (jsonl 스캔 없음 → 수 ms). 짧은 주기로 폴링해도 부담 없다.
+    //
+    // Codex 상태도 반드시 같이 넣는다. 프론트의 pollLive() 는 4초마다 provider 를
+    // 가리지 않고 모든 세션에 대해 s.live = j.live[s.id] || null 을 하므로, 여기서
+    // Codex 를 빼면 훅이 만들어 준 실행 상태가 4초마다 지워지고 60초 전체 갱신까지
+    // 사라진 채로 남는다. liveMap() 은 readdirSync + 작은 JSON 몇 개라 DB 접근이 없다.
+    //
+    // 두 provider 가 한 id 공간을 공유하지 않지만(Claude UUID vs Codex thread id)
+    // 만에 하나 겹쳐도 남의 상태를 덮어쓰지 않게 이미 들어있는 키는 건너뛴다.
+    // 각 항목에 provider 를 실어 보내 프론트가 자기 provider 것만 붙이게 한다.
     if (url.pathname === '/api/live') {
       const live = {};
       for (const [id, v] of liveSessions()) live[id] = v;
+      for (const [id, v] of codex.liveMap()) if (!live[id]) live[id] = v;
       return json(res, 200, { live, at: Date.now() });
     }
 
     if (url.pathname === '/api/transcript') {
+      const limit = Number(url.searchParams.get('limit')) || 40;
+      if (url.searchParams.get('provider') === 'codex') {
+        const id = url.searchParams.get('id') || '';
+        if (!SAFE_ID.test(id)) throw new Error('세션 ID 가 올바르지 않습니다');
+        const t = codex.transcript(id, limit);
+        // codex.transcript() 는 {msgs,total} 이다 (codex.js/test 계약) - 프론트는
+        // Claude 쪽 transcript() 와 같은 {messages,total} 모양을 읽으므로 여기서 맞춰준다.
+        return json(res, 200, { messages: t.msgs, total: t.total, truncated: t.total > t.msgs.length });
+      }
       return json(res, 200, transcript(
         url.searchParams.get('slug') || '',
-        url.searchParams.get('id') || '',
-        Number(url.searchParams.get('limit')) || 40));
+        url.searchParams.get('id') || '', limit));
     }
 
     if (url.pathname === '/api/launch' && req.method === 'POST') {
@@ -499,9 +608,13 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/api/fav' && req.method === 'POST') {
       const b = await readBody(req);
-      if (!SAFE_SLUG.test(String(b.slug || '')) || !SAFE_ID.test(String(b.id || '')))
-        throw new Error('잘못된 세션 지정');
-      const token = `${b.slug}/${b.id}`;
+      if (!SAFE_ID.test(String(b.id || ''))) throw new Error('잘못된 세션 지정');
+      let token;
+      if (b.provider === 'codex') token = 'codex:' + b.id;
+      else {
+        if (!SAFE_SLUG.test(String(b.slug || ''))) throw new Error('잘못된 세션 지정');
+        token = `${b.slug}/${b.id}`;      // 기존 형식 유지 - favorites.json 하위호환
+      }
       const favs = loadFavs();
       const i = favs.indexOf(token);
       if (i >= 0) favs.splice(i, 1); else favs.push(token);
@@ -542,17 +655,24 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, events.snapshot(Number(url.searchParams.get('limit')) || 120));
     }
 
-    // ------- 훅 설치 상태 / 설치 / 제거 -------
+    // ------- 훅 설치 상태 / 설치 / 제거 (provider 로 Claude / Codex 분기) -------
     if (url.pathname === '/api/hooks/status') {
-      return json(res, 200, Object.assign(hooksInstall.status(HOOK_URL), { url: HOOK_URL }));
+      return json(res, 200, {
+        claude: Object.assign(hooksInstall.status(HOOK_URL), { url: HOOK_URL }),
+        codex: codexHooks.status(),
+      });
     }
     if (url.pathname === '/api/hooks/install' && req.method === 'POST') {
       const b = await readBody(req);
-      return json(res, 200, hooksInstall.install(HOOK_URL, b.mode));
+      return json(res, 200, b.provider === 'codex'
+        ? codexHooks.install(HOOK_URL)
+        : hooksInstall.install(HOOK_URL, b.mode));
     }
     if (url.pathname === '/api/hooks/uninstall' && req.method === 'POST') {
-      await readBody(req);
-      return json(res, 200, hooksInstall.uninstall(HOOK_URL));
+      const b = await readBody(req);
+      return json(res, 200, b.provider === 'codex'
+        ? codexHooks.uninstall()
+        : hooksInstall.uninstall(HOOK_URL));
     }
 
     // ------- 설정 쓰기 -------
@@ -578,6 +698,15 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/mcp/list') {
       return json(res, 200, await cfgWrite.mcpList(url.searchParams.get('force') === '1'));
+    }
+    // Codex 구성 읽기 (읽기 전용). codex doctor 가 네트워크 확인까지 해서 수 초가 걸리므로
+    // 구성 탭 로딩에 끼워 넣지 않고, 프론트가 버튼을 눌렀을 때만 호출한다.
+    if (url.pathname === '/api/cfg/codex') {
+      return new Promise(resolve => {
+        codex.doctor((err, report) => {
+          resolve(json(res, 200, err ? { ok: false, error: String(err.message) } : report));
+        });
+      });
     }
 
     if (url.pathname === '/api/cfg' && req.method === 'POST') {
@@ -636,13 +765,16 @@ const server = http.createServer(async (req, res) => {
         action: b.action || 'new', cwd: b.cwd, sessionId: b.sessionId,
         title: b.title, cols: b.cols, rows: b.rows, model: b.model,
         claudeBin: CLAUDE_BIN,
+        provider: b.provider === 'codex' ? 'codex' : 'claude',
+        codexBin: CODEX_BIN,
       });
       return json(res, 200, { ok: true, term: terminals.info(t) });
     }
 
     if (url.pathname === '/api/term/restart' && req.method === 'POST') {
       const b = await readBody(req);
-      const t = await terminals.restart(String(b.id || ''), { claudeBin: CLAUDE_BIN });
+      const t = await terminals.restart(String(b.id || ''),
+        { claudeBin: CLAUDE_BIN, codexBin: CODEX_BIN });
       if (!t) throw new Error('터미널이 없습니다');
       return json(res, 200, { ok: true, term: terminals.info(t) });
     }

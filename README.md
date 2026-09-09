@@ -2,6 +2,7 @@
 
 여러 프로젝트에 흩어진 Claude Code 세션을 **한 페이지에서 보고, 상태를 확인하고,
 그 페이지 안에서 여러 개를 동시에 띄워 작업하고, 하네스 설정까지 한눈에 점검**하는 로컬 대시보드.
+Claude Code 뿐 아니라 OpenAI Codex 세션도 같은 화면·같은 방식으로 다룬다.
 
 주소: http://127.0.0.1:7788 (127.0.0.1 전용 - 외부에 노출되지 않는다)
 
@@ -32,6 +33,13 @@ wscript MakeShortcut.vbs     # 바탕화면에 "Claude 세션 런처" 바로가�
 - 포트 변경: `set CC_LAUNCHER_PORT=9000`
 - 의존성(node-pty, ws)은 첫 실행 때 자동 설치된다
 
+**Node 버전** — 이 프로젝트는 Node.js **v24.13.0** 에서 개발·테스트됐다. Codex 세션
+목록을 읽을 때 `node:sqlite` 를 쓰는데, 이게 최신 Node 를 요구하는 이유다. 공식 문서
+기준 `node:sqlite` 는 v22.5.0 에서 `--experimental-sqlite` 플래그와 함께 처음 추가됐고,
+플래그 없이 쓸 수 있게 된 건 v22.13.0(22.x) / v23.4.0(23.x) 부터다 — 이 코드는 플래그를
+넘기지 않으므로 최소 그 버전은 필요하다. 다만 실제로 돌려본 건 v24.13.0 뿐이고, 그 사이
+버전에서의 동작은 확인하지 않았다.
+
 > `.vbs` 파일은 **UTF-16 + BOM** 으로 저장한다. WSH 는 BOM 없는 파일을 ANSI 로 읽어서
 > 한글 메시지가 깨진다.
 >
@@ -48,7 +56,12 @@ wscript MakeShortcut.vbs     # 바탕화면에 "Claude 세션 런처" 바로가�
 | **터미널** | 대시보드 안에서 도는 세션들. 1/2/3/4/전체 분할 |
 | **실황** | 세션·서브에이전트 활동 워터폴 타임라인 (실시간) |
 | **연결** | 프로젝트 → 세션 → 서브에이전트 그래프 + 실시간 신호 |
-| **구성** | 하네스 설정 전체 (권한·훅·MCP·플러그인·스킬) + 점검 결과 + **편집** |
+| **구성** | 하네스 설정 전체 (권한·훅·MCP·플러그인·스킬) + 점검 결과 + **편집** (Codex 는 `codex doctor` 기반 읽기 전용) |
+
+카드는 프로젝트(폴더) 기준으로 하나만 만들어진다. 같은 폴더에서 Claude Code 세션과
+Codex 세션이 둘 다 있으면 카드 하나 안에 `Claude Code` / `Codex` 두 그룹으로 나뉘어
+들어간다. Codex 는 cwd 를 확장 길이 경로(`\\?\D:\...`)로 저장하는데, 벗기지 않으면
+Claude 쪽과 다른 키가 되어 카드가 둘로 갈리므로 정규화해서 맞춘다.
 
 ## 대시보드에서 직접 작업하기
 
@@ -192,11 +205,23 @@ JSON 파싱 전에 `"usage"` 와 `"assistant"` 두 리터럴이 같은 줄에 �
 `claude agents --json` 과 같은 원본이지만, 파일을 직접 읽으므로 즉시 응답한다(CLI 는 1.5초).
 
 - 🟡 **작업 중**(busy) - 점이 깜빡인다
+- 🟠 **승인 대기**(waiting) - Codex 세션에서만. 사람이 승인해줘야 진행된다
 - 🔵 **대기 중**(idle) - 살아있고 입력 대기
 - ⚫ 표시 없음 - 실행 중이 아님
 
 죽은 프로세스가 남긴 파일은 `tasklist` 로 실제 claude.exe PID 와 20초마다 대조해 걸러낸다
 (PID 재사용까지). 상태는 4초마다 갱신.
+
+Codex 세션의 상태는 이 파일이 아니라 훅이 쓰는 별도 디렉터리에서 온다
+(아래 `실시간 관측 (훅)` > `Codex` 참고). 두 출처를 `/api/live` 가 한 맵으로 합쳐
+내려주므로 화면에서는 구분 없이 같은 점·같은 글자로 보인다.
+
+**내장 터미널의 신원**도 provider 별로 다른 파일에서 온다. Claude 터미널은
+`~/.claude/sessions/<pid>.json`, Codex 터미널은 `~/.codex/.cc-launcher-live/` 를
+pid 로 역인덱스해서 찾는다 (훅이 남기는 pid 가 곧 우리가 띄운 codex 프로세스다).
+provider 로 가르지 않으면 Codex 터미널이 자기 `sessionId` 를 못 찾아 세션 카드와
+연결되지 않고, Windows 의 PID 재사용 때문에 죽은 Claude 세션의 상태·이름을 주워
+그 Claude 카드가 Codex 터미널을 가리키는 일까지 생긴다.
 
 ## 연결 그래프
 
@@ -207,6 +232,12 @@ JSON 파싱 전에 `"usage"` 와 `"assistant"` 두 리터럴이 같은 줄에 �
 - 세션 클릭 → 대화 패널, 대시보드에서 도는 세션 → 그 터미널로 이동
 - 서브에이전트 엣지 굵기는 호출 횟수. `subagent_type` 을 세션 기록 전체에서 훑는다
   (앞/끝 표본으로는 놓친다). mtime 캐시라 두 번째부터는 34ms
+
+**서브에이전트 계층은 Claude 세션에만 그려진다.** Codex 세션은 그래프에 노드로는
+올라오지만 서브에이전트 엣지가 항상 0개다. Codex 쪽 부모-자식 관계는
+`threads.source` 의 `subagent.thread_spawn.parent_thread_id` 에 들어 있고 어댑터가
+`parentId` 로 뽑아서 API 로 내보내기까지 하지만, 그래프가 그 값을 읽지 않는다
+(`thread_spawn` 조인이 아직 구현돼 있지 않다). 실황 타임라인의 레인도 마찬가지다.
 
 ## 구성 (하네스)
 
@@ -237,6 +268,21 @@ Claude Code 설정은 여러 파일에 흩어져 있다. 그걸 한 장으로 �
 | 이름이 겹치는 스킬 | 같은 이름이 두 곳에 있으면 하나가 가려진다 |
 | 없는 디렉터리 | `additionalDirectories` 에 이제 존재하지 않는 경로 |
 | 신뢰 미승인 프로젝트 | `hasTrustDialogAccepted` 가 아직 false |
+
+### Codex (읽기 전용)
+
+Codex 쪽은 `~/.codex/config.toml` 을 직접 파싱하지 않는다. Node 에 내장 TOML
+파서가 없고, 이 프로젝트는 새 npm 의존성을 추가하지 않는다는 원칙이 있어서다.
+대신 `codex doctor --json` 이 설정·MCP·인증·경로 점검 결과를 이미 평평한 JSON으로
+주므로 그걸 그대로 보여준다 (실측 24개 체크 - app-server·auth·config·mcp·network·
+security·terminal 등 카테고리 태그가 항목마다 붙는다). 경고/실패가 있는 항목을
+앞으로 정렬해서 보여준다.
+
+**편집 컨트롤이 없다.** 구성 탭의 [읽기 전용 | 편집] 스위치는 Claude 쪽에만 적용된다.
+
+**버튼을 눌렀을 때만 부른다.** `codex doctor` 는 네트워크 도달성(reachability)까지
+확인해서 수 초가 걸린다. 구성 로딩과 분리해 두는 이유는 Claude 쪽 MCP 연결 상태
+확인(15.3초, 성능 표 참고)을 버튼 뒤로 뺀 것과 같다.
 
 ## 실황 (타임라인)
 
@@ -431,14 +477,106 @@ node hooks-install.js uninstall         # 제거
 - 훅 본문은 `tool_result` 때문에 커질 수 있어 12MB 까지 받고, 저장은 항목당 400자로 자른다
 - SSE 가 끊기면 브라우저가 알아서 재접속한다 (피드 헤더에 `연결됨 / 끊김` 표시)
 
+### Codex
+
+Codex 의 훅 설정 스키마는 핸들러 종류를 4개(`command`, `mcp_tool`, `prompt`, `agent`)
+받아들이지만, 공식 문서 기준 `prompt` 와 `agent` 는 파싱만 되고 실행되지는 않는다.
+그래서 실제로 동작하는 건 `command` 와 `mcp_tool` 뿐이고, **`http` 핸들러는 아예
+없다.** Claude 쪽처럼 프로세스 없이 직접 POST 할 방법이 없다는 뜻이라, 이벤트마다
+작은 브리지 스크립트 `codex-hook.js` 를 실행해 그 프로세스가 대신 런처로 POST 한다.
+
+`~/.codex/hooks.json` 에 이벤트 12개를 건다 - SessionStart/End, UserPromptSubmit,
+PreToolUse/PostToolUse, PermissionRequest, SubagentStart/Stop, Stop, Interrupt,
+PreCompact/PostCompact. 대부분은 `"async": true` 로 걸어 스크립트 프로세스가 뜨는 동안
+에이전트 턴이 막히지 않게 한다. SessionEnd·Interrupt 두 개만 동기(타임아웃 3초)로
+남겨 상태 파일이 확실히 정리되게 한다.
+
+Codex 에는 `~/.claude/sessions/<pid>.json` 같은 대응물이 없어서, `codex-hook.js`
+가 직접 `~/.codex/.cc-launcher-live/<session_id>.json` 에 실행 상태를 쓰고
+SessionEnd 때 그 파일을 지운다.
+
+이 상태는 `/api/live` 가 Claude 상태와 **한 맵에 합쳐서** 내려준다. 프론트의 4초
+폴링은 provider 를 가리지 않고 `live[sessionId]` 를 그대로 붙이므로, 여기서 Codex 를
+빼면 훅이 만들어 준 상태가 4초마다 지워진다. 두 provider 의 id 가 겹칠 일은 없지만
+항목마다 `provider` 를 실어 보내고 프론트가 자기 provider 것만 붙인다.
+
+`waiting`(승인 대기)은 Codex 훅의 `PermissionRequest` 에서만 나오는 상태다. 점은
+주황색(`.st.wait`), 글자는 `승인 대기` 로 그린다 - 세션 행·세션 카드·프로젝트 카드
+헤더·대화 패널 헤더·터미널 탭이 전부 같은 규칙을 쓴다.
+
+**알려진 한계** - Claude 쪽은 `tasklist` 로 살아있는 claude.exe PID 를 대조해 죽은
+프로세스가 남긴 상태 파일을 걸러내지만, Codex 쪽은 이 대조를 하지 않는다. Codex
+프로세스가 SIGKILL 로 죽으면 SessionEnd 훅 자체가 실행되지 않으므로 상태 파일이
+지워지지 않고, 파일에 찍힌 시각이 24시간을 넘기 전까지는 이미 죽은 세션이
+**작업 중**으로 잘못 표시될 수 있다. 관측을 끄면(`uninstall`) 이 디렉터리를 통째로
+지우므로, 훅이 사라진 뒤에 상태가 굳어 남는 일은 없다.
+
+설치/제거는 연결 탭 배너의 버튼으로만 한다 - `codex-hooks-install.js` 는 (Claude 쪽
+`hooks-install.js` 와 달리) CLI 진입점이 없고 서버가 함수를 직접 호출한다. 안전장치는
+Claude 쪽과 같다: 쓰기 전 타임스탬프 백업, 임시 파일에 쓴 뒤 재파싱 검증, 우리 항목만
+`statusMessage` 로 식별해서 직접 넣은 훅은 건드리지 않는다.
+
+되돌리기는 **완전해야 한다**. 그래서 제거는 두 가지를 더 지킨다.
+
+- `hooks.json` 이 애초에 없으면 아무것도 하지 않는다. 지울 게 없는데 `{}` 만 든
+  파일을 새로 만들면 없던 사용자 상태를 만들어내는 셈이다
+- `.cc-launcher-live/` 디렉터리를 통째로 지운다. 그 파일을 지우는 건 `SessionEnd`
+  훅인데 방금 그 훅이 사라졌으므로, 남겨두면 지울 수단이 없다
+
+반대로 **첫 설치는 백업이 없는 게 정상이다** (`backup: null`) - 고칠 원본 파일이
+없기 때문이다. 성공/실패를 백업 경로의 유무로 판단하면 안 된다.
+
 ## 대화 보기
 
 세션 행이나 `대화 보기` 를 누르면 오른쪽 패널에 대화가 열린다.
 
-- 나 / Claude / 도구 / 생각 구분 + 타임스탬프, 볼드·헤딩·불릿·코드블록 렌더링
+- 나 / Claude(Codex 세션이면 `Codex`) / 도구 / 생각 구분 + 타임스탬프,
+  볼드·헤딩·불릿·코드블록 렌더링
 - 실행 중인 세션이면 5초마다 자동 갱신
 - 기본 40개, `더 불러오기` 로 300개까지
 - 18MB 세션도 0.3초 (파일 끝 3MB만 읽는다)
+- Codex 세션은 jsonl 이 아니라 rollout 파일(`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`)을
+  읽는다. **여기도 파일 끝 3MB 상한이 걸려 있다** - rollout 은 실측 최대 9.4MB 인데
+  살아있는 세션을 보고 있으면 5초마다 다시 읽고 다시 파싱하기 때문이다
+  (mtime 캐시는 이 경우 매번 빗나가므로 도움이 안 된다)
+- `threads.rollout_path` 는 일부 행이 확장 길이 경로(`\\?\C:\...`)로 저장돼 있어
+  (실측 33행 중 4행) 어댑터에서 `cwd` 와 같이 접두사를 벗긴다. 안 벗기면 경로 검사에
+  걸려 그 세션은 대화 보기도 토큰 집계도 안 된다
+
+## 토큰 사용량
+
+프로젝트 카드와 세션 행에 토큰 사용량 태그가 붙는다. 어디서 오는지가 Claude 와
+Codex 가 서로 다르고, 그 차이 때문에 보여줄 수 있는 세부 내역도 다르다.
+
+- **Claude** - 세션 jsonl 의 메시지마다 붙는 `usage` 레코드를 전부 더한다
+  (실측 예: 세션 하나에서 2,309개). 입력·출력·캐시쓰기·캐시읽기 내역이 그대로 나온다
+- **Codex** - rollout jsonl 끝의 `token_count` 이벤트에 들어 있는 `total_token_usage`
+  레코드를 읽는다. 이 레코드는 턴마다 **누계**로 다시 찍히므로 마지막 것 하나만 쓴다
+  (더하면 안 된다). 여기에도 입력·출력·캐시읽기·캐시쓰기 내역이 다 들어 있다
+
+**`cache_read_input_tokens` 은 billable 합계에서 뺀다.** 이 값은 매 턴 같은 컨텍스트를
+다시 읽는 값이라, 세션 전체에 걸쳐 그대로 더하면 실제 소비량을 크게 부풀린다.
+합계와 분리해서 툴팁에 따로 보여준다.
+
+**두 provider 가 같은 정의를 쓴다** - `billable = 비캐시 입력 + 출력 + 캐시쓰기`.
+그래서 프로젝트 카드의 합계처럼 Claude 와 Codex 를 더해도 의미가 있다. 이걸 맞추려면
+Codex 쪽에서 한 번 변환이 필요하다: **Codex 의 `input_tokens` 는 `cached_input_tokens`
+를 포함한 값이다** (실측: `total_tokens === input_tokens + output_tokens`). Claude 의
+`input_tokens` 는 반대로 캐시 읽기를 이미 뺀 값이다. 그래서 Codex 쪽만 캐시분을 빼낸다.
+
+**`threads.tokens_used` 컬럼은 쓰지 않는다** (rollout 을 못 읽을 때의 폴백일 뿐이다).
+그 값은 캐시 입력까지 포함한 세션 총량이라 위 정의와 같은 자로 잰 값이 아니다 -
+실측 한 세션에서 `tokens_used` 26,078,648 중 24,819,456(95%)이 캐시 입력이었고,
+같은 세션의 billable 은 1,259,192 이다 (약 20배 차이). 폴백이 쓰인 세션은 사용량
+태그가 빨갛게 표시되고 툴팁이 "캐시 입력 포함이라 Claude billable 과 같은 기준이
+아니다" 라고 말한다. 프로젝트 합계 툴팁에도 섞여 있다는 사실이 적힌다.
+
+**`scan()` 과 분리된 별도의 `/api/usage` 엔드포인트다.** Claude 쪽 사용량은 세션
+파일을 통째로 읽어야 나오는데, `scan()` 은 앞부분 몇 KB·끝 256KB만 읽도록 일부러
+설계돼 있다 (아래 성능 참고). 그래서 `scan()` 에 얹지 않고 요청이 왔을 때만 계산해서
+파일별로 캐시한다 (mtime+size 로 무효화). Codex 도 같은 자리에서 같은 방식으로
+캐시하되, rollout 은 끝 256KB 만 읽는다 (실측: 마지막 `token_count` 는 EOF 에서
+3KB 안쪽이다).
 
 ## 버튼
 
@@ -446,7 +584,8 @@ node hooks-install.js uninstall         # 제거
 |---|---|
 | 이어하기 | `claude --resume <id>` (실행 위치 설정에 따라 대시보드 / 새 창) |
 | 포크 | `claude --resume <id> --fork-session` (원본 보존) |
-| 최근 이어하기 | `claude --continue` |
+| 최근 이어하기 (Claude) | `claude --continue` |
+| 최근 이어하기 (Codex) | `codex resume --last` |
 | 새 세션 | `claude` |
 | 터미널로 이동 | 이미 대시보드에서 돌고 있는 세션이면 그 터미널로 점프 |
 | 창 띄우기 | 외부 창에서 돌고 있는 세션의 터미널 창을 앞으로 |
@@ -455,11 +594,20 @@ node hooks-install.js uninstall         # 제거
 이미 실행 중인 세션은 `이어하기` 가 나오지 않는다 - 같은 세션을 두 번 열면
 Claude Code 가 거부하기 때문에, 대신 이동/포커스 버튼으로 바뀐다.
 
+Codex 세션은 같은 버튼이 다른 명령을 쓴다: 이어하기 `codex resume <id>`, 포크
+`codex fork <id>`, 최근 이어하기 `codex resume --last`, 새 세션 `codex`.
+실행 위치(대시보드 / 새 창)는 Claude 와 똑같이 헤더 설정을 따른다.
+프로젝트 카드 아래쪽의 `최근 이어하기` 와 `새 세션` 은 provider 별로 버튼이
+따로 있고, `codex` 를 PATH 에서 못 찾으면 Codex 쪽 버튼이 비활성으로 나온다.
+
 ## 단축키
 
 - `/` 검색창 포커스 · `Enter` 첫 세션 열기 · `Esc` 검색 초기화 / 패널 닫기
 - 검색: 프로젝트명 · 경로 · 세션 제목 · 첫/마지막 프롬프트 공백 구분 AND
 - 터미널에 포커스가 있으면 전역 단축키는 동작하지 않는다 (키를 PTY 가 받는다)
+- 터미널 복사/붙여넣기: `Ctrl+V` 붙여넣기 · 선택이 있을 때 `Ctrl+C` 복사(없으면
+  평소대로 SIGINT) · `Ctrl+Shift+C` 복사(선택 없으면 SIGINT 로 안 내려가고 키 입력만
+  무시된다) · 우클릭은 선택이 있으면 복사, 없으면 붙여넣기
 
 ## 세션 제목
 
@@ -477,8 +625,12 @@ terminals.js         내장 터미널 관리 (PTY 생성·스크롤백·detach/a
 tokens.js            토큰 사용량 집계 (세션 기록의 usage 합계, 꼬리 읽기 + 중복 제거)
 harness.js           하네스 설정 수집 + 그래프 데이터 (읽기 전용)
 config-write.js      설정 쓰기 (백업·원자적 쓰기·휴지통·타입 검증)
+codex.js             Codex 어댑터 (threads sqlite 읽기·실행 인자·rollout 파싱·doctor)
 events.js            훅 이벤트 링 버퍼 + SSE + 세션 단계 추론 + 타임라인 구간/턴
+usage.js             토큰 사용량 (Claude usage 레코드 합산 / Codex rollout 의 token_count 누계)
 hooks-install.js     관측 훅 설치/제거 (백업 + 재파싱 검증)
+codex-hooks-install.js Codex 훅 설치/제거 (백업 + 재파싱 검증, CLI 없음 - 서버가 직접 호출)
+codex-hook.js        Codex 훅 브리지 스크립트 (POST + 실행 상태 파일 갱신, exit 0 고정)
 public/index.html    대시보드
 public/term.js       xterm.js 연결 + 분할 레이아웃
 public/harness-ui.js 구성 탭 + 그래프 SVG 렌더링
@@ -496,23 +648,36 @@ pins.json            상단 고정한 프로젝트 (자동 생성)
 favorites.json       ★ 즐겨찾기한 세션 (자동 생성)
 ```
 
+`npm test` 로 유닛 테스트를 돌린다 (Node 내장 `node:test`, 추가 의존성 없음. 실측 90개 통과).
+
+`server.js` 는 맨 위에서 `node:sqlite` 의 `ExperimentalWarning` 하나만 걸러낸다.
+`--no-warnings` 로 통째로 끄면 진짜 봐야 할 deprecation 경고까지 사라지고, `run.bat` /
+`run-hidden.vbs` 에 플래그를 넣으면 `npm start` 로 띄웠을 때는 또 경고가 뜬다.
+서버 진입점에서 거르면 어떻게 띄우든 결과가 같다.
+
 ## 성능
 
 | 동작 | 시간 |
 |---|---|
 | 첫 전체 스캔 (42세션 / 490MB) | 210ms |
 | 재스캔 (mtime 캐시) | 23ms |
+| Codex 스레드 조회 (sqlite, 33세션) | 11ms / 1ms (캐시) |
 | 상태 갱신 (`/api/live`) | 수 ms |
 | 대화 열기 (18MB 세션) | 310ms |
 | 토큰 집계 (첫 회 / 캐시) | 207ms / 25ms |
 | 구성 수집 | 74ms |
+| Codex 구성 (`codex doctor`, 24개 체크) | 수 초 (버튼으로 분리, 네트워크 확인 포함) |
 | 그래프 (첫 회 / 캐시) | 648ms / 34ms |
 | 훅 이벤트 1건 (첫 연결 / 이후) | 67ms / 8ms |
 | MCP 연결 상태 확인 (11서버) | 15.3s (버튼으로 분리) |
+| 토큰 사용량 계산 (`/api/usage`, Claude 세션 15개 / 53MB) | 195ms (첫 계산) / 1ms 미만 (캐시) |
 
 세션 파일을 통째로 읽지 않는다. 앞부분에서 `cwd`·제목·첫 프롬프트를, 끝 256KB 에서
 마지막 프롬프트를 뽑는다. `file-history-snapshot` 같은 거대 레코드가 앞을 막고 있으면
 최대 2MB까지 창을 넓혀가며 읽는다. 그래프의 서브에이전트 스캔만 파일 끝 24MB 를 훑는다.
+Claude 쪽 토큰 사용량만 예외로 파일을 통째로 읽는다 (`usage` 레코드가 메시지 전체에
+흩어져 있어 부분 읽기로는 못 뽑는다) - 그래서 `scan()` 에 얹지 않고 `/api/usage` 로 분리했다.
+Codex 쪽은 통째로 읽지 않는다: 사용량은 rollout 끝 256KB, 대화 보기는 끝 3MB 만 읽는다.
 
 ## 주의
 
@@ -524,6 +689,8 @@ favorites.json       ★ 즐겨찾기한 세션 (자동 생성)
 - 내장 터미널을 ✕ 로 닫으면 그 세션은 **종료**된다. 대화 기록은 남으므로 나중에 이어할 수 있다.
 - 세션 파일 경로는 화이트리스트 정규식으로만 받는다 (경로 탈출 차단).
 - 폴더가 삭제된 프로젝트는 흐리게 + `폴더 없음` 으로 표시되고 실행이 막힌다.
+- 이 런처를 더 안 쓸 거면 Claude 훅뿐 아니라 Codex 훅도 함께 빼는 게 깔끔하다
+  (Claude 는 `node hooks-install.js uninstall`, Codex 는 연결 탭 배너 버튼으로 - 전용 CLI 는 없다).
 
 ## 비슷한 도구
 

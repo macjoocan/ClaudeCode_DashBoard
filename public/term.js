@@ -345,7 +345,7 @@
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         action: opts.action || 'new', cwd: opts.cwd, sessionId: opts.sessionId,
-        title: opts.title, cols: cols, rows: rows
+        title: opts.title, cols: cols, rows: rows, provider: opts.provider
       })
     }).then(function (r) { return r.json(); }).then(function (j) {
       if (j.error) throw new Error(j.error);
@@ -354,6 +354,10 @@
       return j.term;
     });
   }
+
+  // 복사·붙여넣기는 아래 wireClipboard() 한 곳에서만 건다.
+  // (병합 정리: 여기 있던 같은 목적의 구현을 지웠다. 둘 다 두면 contextmenu 리스너가
+  //  두 개 붙어, 선택 상태로 우클릭하면 복사한 뒤 곧바로 붙여넣기까지 일어난다.)
 
   function mount(info) {
     if (views.has(info.id)) return views.get(info.id);
@@ -389,6 +393,7 @@
     if (order.indexOf(info.id) < 0) order.push(info.id);
 
     el.addEventListener('mousedown', function () { focus(info.id, true); });
+
     term.onData(function (d) { sendMsg(v, { t: 'i', d: d }); });
     term.onResize(function (size) { sendMsg(v, { t: 'r', c: size.cols, r: size.rows }); });
 

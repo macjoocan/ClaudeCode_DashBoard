@@ -1,0 +1,341 @@
+// Codex 세션 어댑터. Codex 관련 지식은 전부 이 파일이 소유한다.
+// 세션 목록은 rollout 파일을 스캔하지 않고 ~/.codex/state_5.sqlite 의
+// threads 테이블을 읽는다 (실측 33행 = rollout 파일 33개로 일치).
+'use strict';
+
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { DatabaseSync } = require('node:sqlite');
+const { execFileSync, exec } = require('node:child_process');
+
+const TITLE_MAX = 200;
+
+// Codex 는 cwd 와 rollout_path 를 확장 길이 경로(\\?\D:\...)로 저장하는 경우가 있다.
+// 벗기지 않으면 cwd 는 Claude 프로젝트 카드와 다른 키가 되어 카드가 둘로 갈리고,
+// rollout_path 는 isInsideSessions() 를 통과하지 못한다.
+function normalizeCwd(s) {
+  let v = String(s || '');
+  if (v.startsWith('\\\\?\\UNC\\')) return '\\\\' + v.slice(8);
+  if (v.startsWith('\\\\?\\')) return v.slice(4);
+  return v;
+}
+
+// threads.title 은 보통 짧지만(중앙값 29자) 승인 요청 블롭이 통째로
+// 들어가 36,000자가 넘는 경우가 있다. 반드시 자른다.
+function safeTitle(...candidates) {
+  for (const c of candidates) {
+    const v = String(c == null ? '' : c).replace(/\s+/g, ' ').trim();
+    if (!v) continue;
+    return v.length > TITLE_MAX ? v.slice(0, TITLE_MAX) + '…' : v;
+  }
+  return '';
+}
+
+const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+const STATE_DB = path.join(CODEX_HOME, 'state_5.sqlite');
+const LIVE_DIR = path.join(CODEX_HOME, '.cc-launcher-live');
+const LIVE_MAX_AGE = 24 * 60 * 60 * 1000;   // 하루 넘은 상태 파일은 죽은 것으로 본다
+
+// Codex 에는 ~/.claude/sessions/<pid>.json 대응물이 없다.
+// 우리 훅(codex-hook.js)이 쓴 파일을 읽는다.
+function liveMap(dir) {
+  const d = dir || LIVE_DIR;
+  const out = new Map();
+  let files = [];
+  try { files = fs.readdirSync(d).filter(f => f.endsWith('.json')); } catch { return out; }
+  const now = Date.now();
+  for (const f of files) {
+    let j;
+    try { j = JSON.parse(fs.readFileSync(path.join(d, f), 'utf8')); } catch { continue; }
+    if (!j || !j.sessionId) continue;
+    const at = Number(j.at || 0);
+    if (!Number.isFinite(at) || now - at > LIVE_MAX_AGE) continue;
+    out.set(String(j.sessionId), {
+      provider: 'codex',   // /api/live 가 Claude 상태와 한 맵에 섞으므로 출처를 남긴다
+      status: j.status === 'busy' || j.status === 'waiting' ? j.status : 'idle',
+      cwd: j.cwd || null, pid: j.pid || null, at,
+    });
+  }
+  return out;
+}
+
+const SELECT = `
+  select id, rollout_path, cwd, title, first_user_message, preview,
+         updated_at_ms, created_at_ms, git_branch, thread_source, source, tokens_used
+    from threads
+   where archived = 0
+   order by updated_at_ms desc`;
+
+// source 는 '{"subagent":{"thread_spawn":{"parent_thread_id":"...","depth":1}}}'
+// 형태이거나 null 이다. 파싱에 실패해도 세션 자체는 살린다.
+function parentOf(sourceJson) {
+  if (!sourceJson) return null;
+  try {
+    const j = JSON.parse(sourceJson);
+    return j?.subagent?.thread_spawn?.parent_thread_id || null;
+  } catch { return null; }
+}
+
+// 읽기 전용으로 연다. Codex 가 쓰는 중이라 잠겨 있으면 temp 로 복사해 읽는다.
+//
+// WAL 모드 DB 를 readOnly 로 열면 SQLite 가 옆에 -shm/-wal 사이드카 파일을
+// 스스로 만든다(실측: state_5.sqlite-shm, state_5.sqlite-wal 생성됨). 이건
+// 우리가 쓰기를 한 게 아니라 SQLite 자체의 동작이라 무해하다. immutable=1 로
+// 열면 이 사이드카가 안 생기지만, Codex 가 동시에 쓰는 중이면 torn(중간 상태)
+// 읽기를 할 위험이 있어 일부러 쓰지 않는다.
+function openReadOnly(dbPath) {
+  try {
+    return { db: new DatabaseSync(dbPath, { readOnly: true }), tmp: null };
+  } catch {
+    // 1차 open 이 실패한 경우에만 여기로 온다. 폴백(복사 후 재오픈) 자체가
+    // 또 실패하면(copyFileSync 실패, 또는 복사본이 손상돼 재오픈 실패)
+    // mkdtempSync 로 만든 temp 디렉터리가 정리되지 않고 남는다. 그래서
+    // 폴백 블록 전체를 try/catch 로 감싸 실패 시 temp 디렉터리를 지우고
+    // 다시 던진다 — 바깥 readThreads 의 catch 가 최종적으로 []를 반환한다.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-codex-'));
+    try {
+      const tmp = path.join(dir, 'state.sqlite');
+      fs.copyFileSync(dbPath, tmp);
+      return { db: new DatabaseSync(tmp, { readOnly: true }), tmp };
+    } catch (e) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+      throw e;
+    }
+  }
+}
+
+function readThreads(dbPath) {
+  const file = dbPath || STATE_DB;
+  if (!fs.existsSync(file)) return [];
+  let handle;
+  try { handle = openReadOnly(file); } catch { return []; }
+
+  try {
+    return handle.db.prepare(SELECT).all().map(r => ({
+      id: r.id,
+      provider: 'codex',
+      title: safeTitle(r.title, r.first_user_message, r.preview),
+      firstPrompt: safeTitle(r.first_user_message),
+      last: safeTitle(r.preview, r.first_user_message),
+      mtime: Number(r.updated_at_ms) || Number(r.created_at_ms) || 0,
+      branch: r.git_branch || null,
+      cwd: normalizeCwd(r.cwd),
+      // cwd 와 마찬가지로 rollout_path 도 일부 행이 확장 길이 경로(\\?\C:\...)로
+      // 저장돼 있다 (실측 33행 중 4행). 그대로 두면 isInsideSessions() 가 path.relative
+      // 로 봤을 때 공통 조상이 없다고 판단해 거부하고, 그 세션은 대화 보기도 토큰
+      // 집계도 못 한다. 여기서 한 번 벗겨 아래로는 항상 평범한 경로만 흐르게 한다.
+      rolloutPath: r.rollout_path ? normalizeCwd(r.rollout_path) : null,
+      threadSource: r.thread_source || null,
+      parentId: parentOf(r.source),
+      tokens: Number(r.tokens_used) || 0,
+    }));
+  } catch {
+    return [];
+  } finally {
+    try { handle.db.close(); } catch {}
+    if (handle.tmp) { try { fs.rmSync(path.dirname(handle.tmp), { recursive: true, force: true }); } catch {} }
+  }
+}
+
+// 파일 mtime 대신 DB 내용으로 캐시를 무효화한다.
+// sqlite 는 WAL 때문에 mtime 이 안 바뀔 수 있다.
+function stamp(dbPath) {
+  const file = dbPath || STATE_DB;
+  if (!fs.existsSync(file)) return '';
+  let handle;
+  try { handle = openReadOnly(file); } catch { return ''; }
+  try {
+    const r = handle.db.prepare('select count(*) n, max(updated_at_ms) m, sum(archived) a from threads').get();
+    return `${r.n}:${r.m || 0}:${r.a || 0}`;
+  } catch {
+    return '';
+  } finally {
+    try { handle.db.close(); } catch {}
+    if (handle.tmp) { try { fs.rmSync(path.dirname(handle.tmp), { recursive: true, force: true }); } catch {} }
+  }
+}
+
+let _cache = { stamp: null, rows: [] };
+
+function sessions() {
+  const s = stamp();
+  if (s && s === _cache.stamp) return _cache.rows;
+  const rows = readThreads();
+  _cache = { stamp: s, rows };
+  return rows;
+}
+
+// 실행 시 codex CLI 에 넘길 인자를 만든다. Claude 쪽 claudeArgs 와 대응.
+function codexArgs(action, sessionId) {
+  if (action === 'resume' || action === 'fork') {
+    if (!sessionId) throw new Error('세션 ID 가 필요합니다');
+    return [action, sessionId];
+  }
+  if (action === 'continue') return ['resume', '--last'];
+  return [];   // 'new'
+}
+
+// PATH 에서 codex 실행파일을 찾는다. 없으면 null.
+// npm 전역 설치는 같은 디렉터리에 확장자 없는 POSIX 셸 스크립트(#!/bin/sh, WSL/Git-Bash 용)와
+// codex.cmd(Windows 용)를 함께 만든다. where.exe 는 확장자 없는 쪽을 먼저 나열하는데,
+// 그 파일은 PE 형식이 아니라 pty.spawn 이 "Cannot create process, error code: 193" 으로 죽는다.
+// 그래서 .cmd/.exe/.bat 처럼 Windows 가 직접 실행 가능한 확장자를 우선한다
+// (findClaudeBin 이 claude.exe/claude.cmd 를 우선하는 것과 같은 이유).
+function findCodexBin() {
+  try {
+    const lines = execFileSync('where.exe', ['codex'], { encoding: 'utf8' })
+      .split(/\r?\n/).filter(Boolean);
+    return lines.find(l => /\.(cmd|exe|bat)$/i.test(l)) || lines[0] || null;
+  } catch { return null; }
+}
+
+// rollout jsonl 한 줄 = { timestamp, type, payload }.
+// 첫 줄(session_meta)은 base_instructions 때문에 50KB 를 넘을 수 있어
+// 줄 단위로 읽되 내용은 필요한 것만 뽑는다.
+function rowToMsg(j) {
+  const p = j.payload || {};
+  const at = j.timestamp || null;
+  if (j.type === 'event_msg' && p.type === 'user_message' && p.message)
+    return { role: 'user', text: String(p.message), at };
+  if (j.type === 'event_msg' && p.type === 'agent_message' && p.message)
+    return { role: 'assistant', text: String(p.message), at };
+  if (j.type === 'response_item' && p.type === 'function_call')
+    return { role: 'tool', text: `${p.name || 'tool'} ${String(p.arguments || '').slice(0, 400)}`, at };
+  return null;
+}
+
+// rollout 은 실측 최대 9.4MB 인데, 대화 패널이 열려 있는 동안 5초마다 다시 읽고
+// 다시 파싱한다. Claude 쪽 transcript() 가 파일 끝 3MB(TRANSCRIPT_BYTES)만 읽는 것과
+// 같은 한계를 건다.
+//
+// mtime+size 캐시 대신 꼬리 자르기를 고른 이유: 이 재파싱이 문제가 되는 건 "살아있는"
+// 세션을 보고 있을 때인데, 그때는 5초마다 파일이 실제로 자라므로 mtime 캐시가 매번
+// 빗나가 아무것도 막아주지 못한다. 꼬리 자르기는 파일이 얼마나 크든 상한을 준다.
+const ROLLOUT_TAIL_BYTES = 3 * 1024 * 1024;
+
+function readTail(file, bytes) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(0, size - bytes);
+    const buf = Buffer.alloc(size - start);
+    if (buf.length) fs.readSync(fd, buf, 0, buf.length, start);
+    return { text: buf.toString('utf8'), partial: start > 0 };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+  }
+}
+
+// maxBytes 는 테스트에서 작은 값으로 꼬리 자르기를 확인하기 위한 선택적 오버라이드다.
+function parseRollout(file, limit, maxBytes) {
+  if (!file || !fs.existsSync(file)) return { msgs: [], total: 0 };
+  const tail = readTail(file, Number(maxBytes) > 0 ? Number(maxBytes) : ROLLOUT_TAIL_BYTES);
+  if (!tail) return { msgs: [], total: 0 };
+
+  const lines = tail.text.split('\n');
+  if (tail.partial) lines.shift();   // 중간부터 읽었으면 첫 줄은 잘려 있다
+
+  const msgs = [];
+  for (const line of lines) {
+    if (!line) continue;
+    let j;
+    try { j = JSON.parse(line); } catch { continue; }
+    const m = rowToMsg(j);
+    if (m) msgs.push(m);
+  }
+  const n = Math.max(1, Number(limit) || 40);
+  return { msgs: msgs.slice(-n), total: msgs.length };
+}
+
+// 경로 탈출 차단: rollout 은 반드시 ~/.codex/sessions 하위여야 한다.
+// path.resolve 뒤에 startsWith 만 쓰면 문자열 접두사 비교라 "sessions-evil" 같이
+// 이름만 같은 접두사로 시작하는 형제 디렉터리도 통과해버린다(구분자 경계를 안 본다).
+// path.relative 로 실제 트리 관계를 본다: 결과가 '..' 이거나 '..' + 구분자로
+// 시작하면 상위로 나간 것이고, 절대경로 그대로면(윈도우에서 드라이브가 다르면
+// relative 가 target 을 그대로 돌려준다) 공통 조상이 없다는 뜻이다.
+// 둘 다 아니면 root 하위다. root 자신(빈 문자열)은 파일이 아니므로 제외한다.
+function isInsideSessions(p) {
+  const root = path.resolve(CODEX_HOME, 'sessions');
+  const target = path.resolve(p || '');
+  const rel = path.relative(root, target);
+  return rel !== '' && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
+}
+
+function transcript(sessionId, limit) {
+  // sessions() 를 쓴다 - readThreads() 는 매번 DB 를 다시 연다
+  const row = sessions().find(r => r.id === sessionId);
+  if (!row) throw new Error('세션을 찾을 수 없습니다');
+  if (!isInsideSessions(row.rolloutPath)) throw new Error('세션 파일 경로가 올바르지 않습니다');
+  return parseRollout(path.resolve(row.rolloutPath || ''), limit);
+}
+
+// ------------------------------------------------------- codex doctor (구성 읽기)
+//
+// ~/.codex/config.toml 을 직접 파싱하지 않는다 - Node 에 내장 TOML 파서가 없고
+// 이 프로젝트는 새 npm 의존성을 금지한다. `codex doctor --json` 이 같은 정보(설정,
+// MCP, 인증, 경로, 설치 상태)를 평평한 JSON 으로 이미 주므로 그걸 그대로 쓴다.
+
+const STATUS_ORDER = { fail: 0, error: 0, warning: 1, warn: 1, ok: 2, idle: 3 };
+
+// json.checks 는 { checkId: {id, category, status, summary, details} } 형태의 객체다.
+// details 는 항상 문자열→문자열 평면 맵이다(실측). 화면에서 바로 나열할 수 있게
+// 배열로 펴고, 문제 있는 상태(경고/실패)를 앞으로 정렬한다.
+function parseDoctor(json) {
+  if (!json || typeof json !== 'object' || !json.checks || typeof json.checks !== 'object')
+    return { ok: false, version: null, status: null, checks: [] };
+  const checks = Object.values(json.checks)
+    .filter(c => c && typeof c === 'object')
+    .map(c => ({
+      id: String(c.id || ''), category: String(c.category || ''),
+      status: String(c.status || ''), summary: String(c.summary || ''),
+      details: (c.details && typeof c.details === 'object') ? c.details : {},
+    }))
+    .sort((a, b) => (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9)
+                    || a.id.localeCompare(b.id));
+  return { ok: true, version: json.codexVersion || null,
+           status: json.overallStatus || null, checks };
+}
+
+// codex doctor 는 네트워크 확인까지 해서 수 초가 걸린다.
+// 구성 로딩과 분리해 버튼을 눌렀을 때만 부른다 (Claude 쪽 MCP 확인과 같은 방침).
+//
+// findCodexBin() 은 npm 전역 설치의 codex.cmd 를 우선 찾는데, execFile 은 (spawn 과
+// 마찬가지로) 셸을 거치지 않아 .cmd/.bat 를 직접 실행하지 못하고 Windows 에서
+// "spawn EINVAL" 로 죽는다(실측).
+//
+// 1차 수정으로 execFile('cmd.exe', ['/d','/s','/c', bin, ...]) 를 썼으나(배열 인자를
+// Node 가 알아서 이스케이프해 줄 거라 가정) 실측에서 구멍이 발견됐다: bin 경로에
+// 공백이 있으면(예: 사용자 이름이 "John Smith") cmd.exe 가 /s 스위치 아래에서 인자를
+// 자기 방식대로 다시 토큰화해 "'D:\tmp\space' 은(는) 내부 또는 외부 명령이 아닙니다"
+// 로 조용히 실패한다 - Node 가 CreateProcess 용으로 인자를 개별적으로 이스케이프해도
+// cmd.exe 자체의 /c 파싱 규칙(따옴표 벗기기)까지 맞춰주지는 않기 때문이다.
+// exec() 로 바꾸고 경로를 우리가 직접 큰따옴표로 감싸 하나의 문자열로 넘기면
+// cmd.exe 가 항상 "따옴표로 감싼 파일명" 규칙을 그대로 따라 안전하다(실측 검증:
+// 공백 있는 가짜 .cmd 와 공백 없는 실제 codex.cmd 양쪽 모두 통과).
+// bin 은 findCodexBin() 결과(신뢰 가능, PATH 스캔 결과)이고 인자도 리터럴이라
+// 셸 인젝션 우려는 없다 - 따옴표는 순전히 파싱 정확성을 위한 것이다.
+//
+// bin 매개변수는 테스트에서 실제 codex 를 부르지 않고 공백 경로 픽스처로 검증할 수
+// 있게 하는 선택적 오버라이드다(readThreads/stamp 가 dbPath 를 받는 것과 같은 패턴).
+function doctor(cb, bin) {
+  bin = bin || findCodexBin();
+  if (!bin) return cb(new Error('codex 를 찾을 수 없습니다'));
+  exec('"' + bin + '" doctor --json',
+    { timeout: 60000, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
+    (err, stdout) => {
+      if (err && !stdout) return cb(err);
+      let j;
+      try { j = JSON.parse(stdout); } catch (e) { return cb(new Error('doctor 출력을 읽지 못했습니다')); }
+      cb(null, parseDoctor(j));
+    });
+}
+
+module.exports = {
+  normalizeCwd, safeTitle, readThreads, TITLE_MAX, CODEX_HOME, STATE_DB, sessions, stamp,
+  codexArgs, findCodexBin, parseRollout, transcript, isInsideSessions, liveMap, LIVE_DIR,
+  parseDoctor, doctor,
+};
