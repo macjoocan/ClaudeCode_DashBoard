@@ -86,6 +86,48 @@
   main.termmode{padding:0;max-width:none}
   .grid{display:grid;gap:13px;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));align-items:start}
   .grid.wide{grid-template-columns:1fr}
+
+  /* 목록 도구 막대 - 접기 / 보기 방식 / 정렬 */
+  .listbar{display:flex;gap:4px;align-items:center;flex-wrap:wrap;
+    padding:7px 2px 11px;font-size:11.5px;color:var(--dim2)}
+  .listbar .lb{margin:0 3px 0 9px;letter-spacing:.2px}
+  .listbar .lb:first-child{margin-left:0}
+  .listbar button{background:var(--panel2);border:1px solid var(--line);color:var(--dim);
+    border-radius:6px;padding:3px 9px;cursor:pointer;font-size:11.5px;font-family:inherit}
+  .listbar button:hover{border-color:var(--line2);color:var(--fg)}
+  .listbar button.on{background:var(--panel3);border-color:var(--accent);color:var(--accent2)}
+  .listbar .sep{width:1px;height:16px;background:var(--line);margin:0 5px}
+  .listbar .cnt{margin-left:auto;color:var(--dim2)}
+
+  /* 조밀 - 카드는 그대로 두고 여백과 본문만 줄인다 */
+  .grid.dense{gap:9px;grid-template-columns:repeat(auto-fill,minmax(290px,1fr))}
+  .grid.dense .chead{padding:9px 11px 7px}
+  .grid.dense .s{padding:6px 11px}
+  .grid.dense .cfoot{padding:6px 9px}
+  .grid.dense .ctags{margin-top:5px}
+  .grid.dense .sacts{margin-top:5px}
+
+  /* 목록 - 카드 틀을 벗기고 한 줄씩 */
+  .grid.list{display:block}
+  .grid.list .card{border-radius:0;border-left:none;border-right:none;
+    border-top:none;margin:0;background:none}
+  .grid.list .card+.card{border-top:1px solid var(--line)}
+  .grid.list .chead{padding:7px 4px;align-items:center}
+  .grid.list .cpath{display:none}
+  .grid.list .ctags{margin-top:0}
+  .grid.list .s{padding:5px 4px 5px 22px;border-bottom:none}
+  .grid.list .slast{display:none}
+  .grid.list .sacts{display:none}
+  .grid.list .glabel{padding:5px 4px 2px}
+  .grid.list .cfoot{background:none;border-top:none;padding:4px 4px 8px 22px}
+  .grid.list .card.sc .body{display:none}
+
+  /* 접힌 카드 */
+  .card.fold .body,.card.fold .slist,.card.fold .glabel,
+  .card.fold .more,.card.fold .cfoot{display:none}
+  .cfold{background:none;border:none;color:var(--dim2);cursor:pointer;font-size:11px;
+    line-height:1;padding:3px 4px;border-radius:4px;flex:none;align-self:center}
+  .cfold:hover{color:var(--accent2);background:var(--panel2)}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;
     display:flex;flex-direction:column}
   .card.missing{opacity:.45}
@@ -170,6 +212,13 @@
     font-size:12px;line-height:1;padding:2px 4px;border-radius:4px}
   .termpane .ph2 .pbtn:hover{color:var(--accent2);background:var(--panel)}
   .termpane .ph2 .pbtn.warn:hover{color:var(--busy)}
+  /* 자리 번호 + 앞뒤로 옮기기 */
+  .termpane .ph2 .pos{flex:none;min-width:15px;height:15px;line-height:15px;text-align:center;
+    background:var(--panel3);color:var(--dim);border-radius:4px;font-size:10px;font-weight:700}
+  .termpane.active .ph2 .pos{background:var(--accent);color:var(--bg)}
+  .termpane .ph2 .pbtn.nav{font-size:10px;padding:2px 3px}
+  .termpane .ph2 .pbtn:disabled{opacity:.25;cursor:default}
+  .termpane .ph2 .pbtn:disabled:hover{color:var(--dim2);background:none}
   .termpane .pb2{flex:1;min-height:0;padding:6px 2px 4px 8px;overflow:hidden}
   .termpane .xterm{height:100%}
 
@@ -568,6 +617,7 @@
 </header>
 
 <main id="main">
+  <div class="listbar" id="listbar"></div>
   <div class="grid" id="list"><div class="empty">불러오는 중&#8230;</div></div>
   <div id="termwrap" hidden>
     <div class="termbar" id="termbar"></div>
@@ -624,6 +674,17 @@ let TAB  = localStorage.getItem('ccl.tab')  || 'all';
 let MODE = localStorage.getItem('ccl.mode') || 'embed';   // embed | window
 let WIDE = localStorage.getItem('ccl.wide') === '1';
 const expanded = new Set();
+
+// 세션이 많아지면 카드가 벽처럼 쌓인다. 접기·보기방식·정렬로 줄인다.
+let VIEW = localStorage.getItem('ccl.view') || 'card';   // card | dense | list
+let SORT = localStorage.getItem('ccl.sort') || 'recent'; // recent | name | count
+const collapsed = new Set(JSON.parse(localStorage.getItem('ccl.collapsed') || '[]'));
+
+function saveCollapsed(){
+  localStorage.setItem('ccl.collapsed', JSON.stringify([...collapsed]));
+}
+// 목록 보기에서는 마지막 프롬프트 같은 본문을 걷어낸다
+function terse(){ return VIEW !== 'card'; }
 let openSess = null, openLimit = 40, transTimer = null;
 
 /* ---------------------------------------------------------- 유틸 */
@@ -914,6 +975,59 @@ function projectUsageTag(p){
   return '<span class="tag'+(u.approx?' err':'')+'" title="'+esc(title)+'">토큰 '+esc(fmtUsage(u.billable))+'</span>';
 }
 
+// 목록 도구 막대. 카드가 몇 장이고 그 중 몇 장이 접혀 있는지도 같이 보여준다.
+function renderListBar(shown, foldable, foldedN){
+  const bar = $('#listbar');
+  if (TAB !== 'all' && TAB !== 'fav' && TAB !== 'live'){ bar.hidden = true; return; }
+  bar.hidden = false;
+  const b = (attr, v, txt, cur, tip) =>
+    '<button data-'+attr+'="'+v+'" class="'+(cur===v?'on':'')+'" title="'+tip+'">'+txt+'</button>';
+  bar.innerHTML =
+      '<span class="lb">접기</span>'
+    + '<button data-fold="all" title="모든 카드를 머리글만 남기고 접는다">전체 접기</button>'
+    + '<button data-fold="none" title="모두 펼친다">전체 펼치기</button>'
+    + '<div class="sep"></div>'
+    + '<span class="lb">보기</span>'
+    + b('listview','card','카드',VIEW,'지금까지의 카드 보기')
+    + b('listview','dense','조밀',VIEW,'여백을 줄여 한 화면에 더 많이')
+    + b('listview','list','목록',VIEW,'카드 틀을 벗고 한 줄씩 - 세션이 많을 때')
+    + '<div class="sep"></div>'
+    + '<span class="lb">정렬</span>'
+    + b('sort','recent','최근',SORT,'최근에 쓴 것부터')
+    + b('sort','name','이름',SORT,'이름 가나다순')
+    + b('sort','count','세션수',SORT,'세션이 많은 것부터')
+    + '<span class="cnt">'
+    +   shown + '개 표시'
+    +   (foldable ? ' · ' + foldedN + '개 접힘' : '')
+    + '</span>';
+}
+
+// 카드 머리글의 접기 토글. 접히면 세션 목록·아래 버튼이 사라지고 머리글만 남는다.
+function foldBtn(key, isFold, hiddenN){
+  return '<button class="cfold" data-fold="' + esc(key) + '" title="'
+    + (isFold ? '펼치기 (세션 ' + hiddenN + '개 숨김)' : '접기 - 머리글만 남긴다')
+    + '">' + (isFold ? '▸' : '▾') + '</button>';
+}
+
+function sortProjects(list){
+  const arr = list.slice();
+  if (SORT === 'name') arr.sort((a,b)=> String(a.name).localeCompare(String(b.name),'ko'));
+  else if (SORT === 'count') arr.sort((a,b)=> b.sessions.length - a.sessions.length);
+  else arr.sort((a,b)=> (b.mtime||0) - (a.mtime||0));
+  // 고정한 프로젝트는 정렬과 상관없이 늘 위에
+  arr.sort((a,b)=> (b.pinned?1:0) - (a.pinned?1:0));
+  return arr;
+}
+
+function sortSessions(list){
+  const arr = list.slice();
+  if (SORT === 'name') arr.sort((a,b)=> String(a.title||'').localeCompare(String(b.title||''),'ko'));
+  else if (SORT === 'count') arr.sort((a,b)=> (b.sizeKB||0) - (a.sizeKB||0));
+  else arr.sort((a,b)=> b.mtime - a.mtime);
+  arr.sort((a,b)=> ((b.live?1:0)-(a.live?1:0)));   // 실행 중이 늘 위
+  return arr;
+}
+
 function projectCard(p, ss, emb){
   const claudeSs = ss.filter(s => s.provider !== 'codex');
   const codexSs  = ss.filter(s => s.provider === 'codex');
@@ -923,8 +1037,11 @@ function projectCard(p, ss, emb){
   const stTitle = p.busyCount ? '작업 중' : (p.waitCount ? '승인 대기' : (p.liveCount ? '대기 중' : '실행 중 아님'));
   const embN = ss.filter(s => emb.has(s.id)).length;
   const codexOn = !!(ENV && ENV.codex);
-  return '<section class="card '+(p.exists?'':'missing')+' '+(p.busyCount?'hasbusy':'')+'">'
+  const fold = collapsed.has(p.key);
+  return '<section class="card '+(p.exists?'':'missing')+' '+(p.busyCount?'hasbusy':'')
+    +     ' '+(fold?'fold':'')+'">'
     + '<div class="chead">'
+    +   foldBtn(p.key, fold, ss.length)
     +   '<span class="st '+st+'" title="'+stTitle+'"></span>'
     +   '<div class="grow">'
     +     '<div class="cname" title="'+esc(p.name)+'">'+esc(p.name)+'</div>'
@@ -961,8 +1078,11 @@ function sessionCard(s, emb){
   const p = s.project;
   const e = emb.get(s.id);
   const vk = esc(s.provider)+'|'+esc(s.slug)+'|'+esc(s.id);
-  return '<section class="card sc '+(s.live&&s.live.status==='busy'?'hasbusy':'')+' '+(p.exists?'':'missing')+'">'
+  const fold = collapsed.has(s.id);
+  return '<section class="card sc '+(s.live&&s.live.status==='busy'?'hasbusy':'')+' '+(p.exists?'':'missing')
+    +     ' '+(fold?'fold':'')+'">'
     + '<div class="chead">'
+    +   foldBtn(s.id, fold, 1)
     +   '<span class="st '+statusClass(s.live)+'" title="'+esc(statusLabel(s.live)||'실행 중 아님')+'"></span>'
     +   '<div class="grow">'
     +     '<div class="proj" title="'+esc(p.cwd)+'">'+esc(p.name)+(p.gitBranch?' · ⎇ '+esc(p.gitBranch):'')+'</div>'
@@ -1000,6 +1120,7 @@ function render(){
   $('#cfgwrap').hidden     = !isCfg;
   $('#tlwrapouter').hidden = !isTl;
   $('#list').hidden = isTerm || isGraph || isCfg || isTl;
+  $('#listbar').hidden = isTerm || isGraph || isCfg || isTl;
   $('#main').classList.toggle('termmode', isTerm);
   if (isTl){ CC.timeline.load(true); return; }
   if (isTerm){ CC.term.refit(); return; }
@@ -1020,26 +1141,35 @@ function render(){
   const ts = terms();
   const emb = embeddedBySession();
   const list = $('#list');
-  list.className = 'grid' + (WIDE ? ' wide' : '');
+  list.className = 'grid ' + VIEW + (WIDE ? ' wide' : '');
 
   if (TAB === 'all'){
     const out = [];
-    for (const p of DATA){
+    let foldedN = 0;
+    for (const p of sortProjects(DATA)){
       const ss = p.sessions.filter(s => hit(p, s, ts));
-      if (ss.length) out.push(projectCard(p, ss, emb));
+      if (!ss.length) continue;
+      if (collapsed.has(p.key)) foldedN++;
+      out.push(projectCard(p, ss, emb));
     }
+    renderListBar(out.length, true, foldedN);
     list.innerHTML = out.length ? out.join('')
       : '<div class="empty">'+(ts.length?'검색 결과가 없습니다.':'세션이 없습니다.')+'</div>';
     return;
   }
 
   const pick = TAB === 'fav' ? (s=>s.fav) : (s=>s.live);
-  const ss = allSessions().filter(s => pick(s) && hit(s.project, s, ts));
-  ss.sort((a,b)=> ((b.live?1:0)-(a.live?1:0)) || (b.mtime-a.mtime));
+  const ss = sortSessions(allSessions().filter(s => pick(s) && hit(s.project, s, ts)));
+  renderListBar(ss.length, true, ss.filter(s=>collapsed.has(s.id)).length);
   list.innerHTML = ss.length ? ss.map(s=>sessionCard(s,emb)).join('')
     : (TAB === 'fav'
       ? '<div class="empty">즐겨찾기한 세션이 없습니다.<br>세션 옆의 <b>☆</b> 를 눌러 자주 쓰는 세션을 등록하세요.</div>'
       : '<div class="empty">지금 실행 중인 세션이 없습니다.</div>');
+}
+
+// 지금 화면에 있는 카드들의 키 (전체 접기/펼치기 대상)
+function visibleKeys(){
+  return [...document.querySelectorAll('#list .cfold')].map(b => b.dataset.fold);
 }
 
 /* ---------------------------------------------------------- 터미널 탭 바 */
@@ -1112,9 +1242,15 @@ function renderTermBar(){
     + '</div>'
     + '<span class="clip" title="' + CLIP_HELP + '">'
     +   '복사 <kbd>Ctrl+C</kbd> · 붙여넣기 <kbd>Ctrl+V</kbd> · 선택 안 되면 <kbd>Shift+드래그</kbd> ⓘ</span>'
-    + '<span class="clip" title="패인 머리글(⠿)을 잡고 다른 패인 위로 끌면 자리가 바뀝니다.&#10;'
-    +   '패인 사이 틈을 끌면 크기가 바뀌고, 더블클릭하면 그 줄만 균등해집니다.">'
-    +   '자리 <kbd>머리글 드래그</kbd> · 크기 <kbd>경계 드래그</kbd> ⓘ</span>';
+    + '<span class="clip" title="자리 옮기기&#10;'
+    +   '  ◀ ▶ 버튼   한 칸씩 앞뒤로&#10;'
+    +   '  Alt+← / Alt+→   터미널에 입력 중에도 됩니다&#10;'
+    +   '  머리글(⠿) 드래그   다른 패인 위로 놓으면 그 자리로 들어갑니다&#10;&#10;'
+    +   '크기 바꾸기&#10;'
+    +   '  패인 사이 틈을 드래그&#10;'
+    +   '  틈을 더블클릭하면 그 줄만 균등&#10;'
+    +   '  크기 초기화 버튼은 전부 되돌립니다">'
+    +   '자리 <kbd>◀ ▶</kbd> <kbd>Alt+←→</kbd> · 크기 <kbd>경계 드래그</kbd> ⓘ</span>';
   $('#termempty').hidden = TERMS.length > 0;
   $('#termhost').hidden = TERMS.length === 0;
 }
@@ -1209,7 +1345,8 @@ document.addEventListener('click', async function(e){
 
   const t = e.target.closest('[data-tab],[data-mode],[data-expand],[data-pin],[data-fav],[data-open],'
     + '[data-act],[data-focus],[data-view],[data-goterm],[data-closeterm],[data-lay],[data-ori],[data-solo],'
-    + '[data-reloadterm],[data-restartterm],[data-resetsize],'
+    + '[data-reloadterm],[data-restartterm],[data-resetsize],[data-movepane],'
+    + '[data-fold],[data-listview],[data-sort],'
     + '[data-openfile],[data-hookinstall],[data-hookuninstall],#t-new,.m.thinking');
   if (!t) return;
 
@@ -1247,6 +1384,25 @@ document.addEventListener('click', async function(e){
     return;
   }
 
+  // ---- 목록 접기 / 보기 방식 / 정렬 ----
+  if (t.dataset.fold !== undefined){
+    e.stopPropagation();                  // 카드 클릭(대화 보기)으로 번지지 않게
+    const k = t.dataset.fold;
+    if (k === 'all')       visibleKeys().forEach(x => collapsed.add(x));
+    else if (k === 'none') visibleKeys().forEach(x => collapsed.delete(x));
+    else if (collapsed.has(k)) collapsed.delete(k);
+    else collapsed.add(k);
+    saveCollapsed();
+    render();
+    return;
+  }
+  if (t.dataset.listview){
+    VIEW = t.dataset.listview; localStorage.setItem('ccl.view', VIEW); render(); return;
+  }
+  if (t.dataset.sort){
+    SORT = t.dataset.sort; localStorage.setItem('ccl.sort', SORT); render(); return;
+  }
+
   if (t.dataset.lay !== undefined){
     CC.term.setLayout(Number(t.dataset.lay)); renderTermBar(); return;
   }
@@ -1255,6 +1411,12 @@ document.addEventListener('click', async function(e){
   }
   if (t.dataset.solo){
     e.stopPropagation(); CC.term.solo(t.dataset.solo); renderTermBar(); return;
+  }
+  if (t.dataset.movepane){
+    e.stopPropagation();
+    CC.term.nudge(t.dataset.movepane, Number(t.dataset.dir) || 0);
+    renderTermBar();
+    return;
   }
   if (t.dataset.resetsize){
     CC.term.resetSizes(); toast('패인 크기를 균등하게 되돌렸습니다'); return;

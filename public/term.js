@@ -151,9 +151,16 @@
       v.el.hidden = !visible;
       v.el.classList.toggle('active', id === active);
       v.el.classList.toggle('solo', n === 1);
+      // grid 자동 배치는 DOM 순서가 아니라 **order 를 반영한 순서**를 따른다.
+      // 이걸 안 주면 order 배열만 바뀌고 화면의 좌우 위치는 그대로다
+      // (자리 옮기기가 "안 먹는" 것처럼 보인다).
+      v.el.style.order = idx;
       v.el.style.gridColumn = (visible && idx === n - 1 && lastSpan > 1)
         ? 'span ' + lastSpan : '';
     });
+
+    // 자리 번호와 ◀ ▶ 활성 상태는 order 에 달려 있으니 같이 다시 그린다
+    refreshHeads();
 
     // 레이아웃이 바뀐 뒤 실제 크기가 정해지면 fit + 손잡이 재배치
     requestAnimationFrame(function () {
@@ -161,6 +168,10 @@
       layoutGuts(geo);
       if (onChange) onChange();
     });
+  }
+
+  function refreshHeads() {
+    views.forEach(function (v) { paneHead(v); });
   }
 
   // ------------------------------------------------------------ 크기 조절 손잡이
@@ -291,6 +302,31 @@
     if (onChange) onChange();
   }
 
+  // 한 칸 앞/뒤로. 화면에 보이는 범위 안에서만 돈다 - 안 보이는 자리로 밀어내면
+  // 버튼을 눌렀는데 패인이 사라진 것처럼 보인다.
+  function nudge(id, dir) {
+    var n = slots();
+    var from = order.indexOf(id);
+    if (from < 0) return false;
+    var to = from + dir;
+    if (to < 0 || to >= Math.max(n, 1) || to >= order.length) return false;
+    order.splice(from, 1);
+    order.splice(to, 0, id);
+    writeJson('ccl.order', order);
+    apply();
+    if (onChange) onChange();
+    return true;
+  }
+
+  // 이 패인이 앞/뒤로 갈 수 있나 (버튼 비활성화 판단용)
+  function canNudge(id, dir) {
+    var n = slots();
+    var i = order.indexOf(id);
+    if (i < 0) return false;
+    var to = i + dir;
+    return to >= 0 && to < Math.max(n, 1) && to < order.length;
+  }
+
   // 머리글을 잡고 끌면 다른 패인 자리로 옮긴다.
   // preventDefault 를 하지 않는다 - 그러면 mousedown 이 막혀 포커스가 안 간다.
   function wireDrag(v) {
@@ -413,12 +449,22 @@
     var st = !i.alive ? '종료됨' : (i.status === 'busy' ? '작업 중' : '대기 중');
     var rs = i.restarts ? ' · 재시작 ' + i.restarts + '회' : '';
     var id = escText(i.id);
+    // 자리 번호를 보여준다. 몇 번째 칸인지 알아야 ◀ ▶ 가 무슨 뜻인지 안다.
+    var pos = order.indexOf(i.id);
+    var posN = pos >= 0 ? (pos + 1) : '';
     v.head.innerHTML =
       '<span class="grip" title="끌어서 자리 옮기기">⠿</span>'
+      + '<span class="pos" title="' + posN + '번째 자리">' + posN + '</span>'
       + '<span class="st ' + dot + '"></span>'
       + '<span class="nm">' + escText(i.name || i.title || proj) + '</span>'
       + '<span class="pj">' + escText(proj) + ' · ' + st + rs + '</span>'
       + '<span class="sp"></span>'
+      + '<button class="pbtn nav" data-movepane="' + id + '" data-dir="-1"'
+      +   (canNudge(i.id, -1) ? '' : ' disabled')
+      +   ' title="앞 자리로 (Alt+←)">◀</button>'
+      + '<button class="pbtn nav" data-movepane="' + id + '" data-dir="1"'
+      +   (canNudge(i.id, 1) ? '' : ' disabled')
+      +   ' title="뒤 자리로 (Alt+→)">▶</button>'
       + '<button class="pbtn" data-reloadterm="' + id + '"'
       +   ' title="새로고침 - 화면만 다시 붙인다. 세션은 건드리지 않는다">↻</button>'
       + '<button class="pbtn warn" data-restartterm="' + id + '"'
@@ -512,6 +558,14 @@
       if (e.type !== 'keydown') return true;
       var ctrl = e.ctrlKey && !e.altKey && !e.metaKey;
       var k = (e.key || '').toLowerCase();
+
+      // Alt+← / Alt+→ : 패인을 앞뒤 자리로. 전역 키 핸들러는 #termwrap 안에서
+      // 물러나므로(터미널 입력을 가로채지 않으려고) 여기서 직접 받는다.
+      if (e.altKey && !e.ctrlKey && !e.metaKey && (k === 'arrowleft' || k === 'arrowright')) {
+        nudge(v.info.id, k === 'arrowleft' ? -1 : 1);
+        if (onChange) onChange();
+        return false;
+      }
 
       if (ctrl && !e.shiftKey && k === 'c') {
         // 선택이 있으면 복사하고 PTY 로 보내지 않는다. 없으면 평소대로 SIGINT.
@@ -725,7 +779,7 @@
     setOrient: setOrient, getOrient: getOrient,
     stop: stop, close: close, drop: drop,
     reload: reload, restart: restart,
-    moveTo: moveTo, resetSizes: resetSizes,
+    moveTo: moveTo, nudge: nudge, resetSizes: resetSizes,
     list: listLocal,
     // 탭 바가 패인 순서를 따라가게 한다
     orderOf: function (id) { var i = order.indexOf(id); return i < 0 ? 9999 : i; },
