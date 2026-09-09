@@ -604,6 +604,117 @@
     body.addEventListener('mousedown', function (e) {
       if (e.button === 1) e.preventDefault();   // 가운데 클릭 자동 스크롤 방지
     });
+
+    wireFiles(v, body);
+  }
+
+  // ------------------------------------------------------ 이미지 · 파일 넣기
+  //
+  // PTY 는 텍스트만 흘린다. 이미지 바이트를 그대로 밀어넣을 방법이 없다.
+  // 그래서 브라우저가 받은 파일을 서버에 올려 디스크에 저장하고, 그 **경로**를
+  // 프롬프트에 찍어준다. CLI 는 경로를 받으면 알아서 읽는다
+  // (공식 문서: "Provide an image path to Claude").
+  //
+  // 끌어다 놓기도 같은 길을 쓴다. 브라우저는 보안상 끌어온 파일의 진짜 경로를
+  // 알려주지 않으므로(파일 이름만 준다), 내용을 올려 새로 저장하는 수밖에 없다.
+
+  function humanSize(n) {
+    if (n < 1024) return n + 'B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(0) + 'KB';
+    return (n / 1048576).toFixed(1) + 'MB';
+  }
+
+  // 경로에 공백이 있으면 따옴표로 감싼다
+  function quoteIfNeeded(p) {
+    return /\s/.test(p) ? '"' + p + '"' : p;
+  }
+
+  function uploadOne(file) {
+    var name = file.name || ('paste-' + Date.now()
+      + ((file.type && file.type.indexOf('/') > 0) ? '.' + file.type.split('/')[1].split('+')[0] : '.bin'));
+    return fetch('/api/paste-file?name=' + encodeURIComponent(name), {
+      method: 'POST',
+      headers: { 'content-type': file.type || 'application/octet-stream' },
+      body: file
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      if (j.error) throw new Error(j.error);
+      return j;
+    });
+  }
+
+  // 파일들을 올리고 경로를 프롬프트에 찍는다
+  function sendFiles(v, files) {
+    var list = [];
+    for (var i = 0; i < files.length; i++) list.push(files[i]);
+    if (!list.length) return;
+
+    note(list.length === 1 ? '올리는 중…' : list.length + '개 올리는 중…');
+    var done = [], failed = 0;
+
+    return list.reduce(function (chain, f) {
+      return chain.then(function () {
+        return uploadOne(f).then(
+          function (j) { done.push(j); },
+          function (e) { failed++; note('올리기 실패: ' + e.message, true); });
+      });
+    }, Promise.resolve()).then(function () {
+      if (!done.length) return;
+      // 경로 앞뒤에 공백을 둬서 이미 쓰던 문장에 자연스럽게 붙게 한다
+      var text = done.map(function (j) { return quoteIfNeeded(j.path); }).join(' ') + ' ';
+      sendMsg(v, { t: 'i', d: text });
+      try { v.term.focus(); } catch (e) {}
+      var bytes = done.reduce(function (s, j) { return s + j.bytes; }, 0);
+      note(done.length + '개 경로를 넣었습니다 · ' + humanSize(bytes)
+        + (failed ? ' (' + failed + '개 실패)' : ''));
+    });
+  }
+
+  function wireFiles(v, body) {
+    // 붙여넣기에 파일이 실려 오면 그것을 먼저 처리한다.
+    // 텍스트 붙여넣기는 건드리지 않는다 - xterm 의 기본 경로로 그냥 흘려보낸다.
+    body.addEventListener('paste', function (e) {
+      var dt = e.clipboardData;
+      if (!dt) return;
+      var files = [];
+      if (dt.files && dt.files.length) {
+        for (var i = 0; i < dt.files.length; i++) files.push(dt.files[i]);
+      } else if (dt.items) {
+        for (var k = 0; k < dt.items.length; k++) {
+          if (dt.items[k].kind === 'file') {
+            var f = dt.items[k].getAsFile();
+            if (f) files.push(f);
+          }
+        }
+      }
+      if (!files.length) return;          // 평범한 텍스트 붙여넣기
+      e.preventDefault();
+      e.stopPropagation();
+      sendFiles(v, files);
+    }, true);
+
+    // 끌어다 놓기
+    var depth = 0;
+    function over(e) {
+      if (!e.dataTransfer || Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') < 0) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    }
+    body.addEventListener('dragenter', function (e) {
+      over(e);
+      if (e.defaultPrevented) { depth++; v.el.classList.add('dropfile'); }
+    });
+    body.addEventListener('dragover', over);
+    body.addEventListener('dragleave', function () {
+      if (--depth <= 0) { depth = 0; v.el.classList.remove('dropfile'); }
+    });
+    body.addEventListener('drop', function (e) {
+      depth = 0;
+      v.el.classList.remove('dropfile');
+      if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+      e.preventDefault();
+      e.stopPropagation();
+      sendFiles(v, e.dataTransfer.files);
+    });
   }
 
   function connect(v) {

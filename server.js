@@ -518,6 +518,26 @@ function readBody(req) {
   });
 }
 
+// 붙여넣기·드롭으로 올라온 파일 원본 바이트. JSON 이 아니라 그대로 받는다.
+const PASTE_MAX = 32 * 1024 * 1024;
+function readRawBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let len = 0;
+    let over = false;
+    req.on('data', c => {
+      len += c.length;
+      if (len > limit) { over = true; req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      if (over) return reject(new Error('파일이 너무 큽니다'));
+      resolve(Buffer.concat(chunks));
+    });
+    req.on('error', () => reject(over ? new Error('파일이 너무 큽니다') : new Error('업로드가 끊겼습니다')));
+  });
+}
+
 // 훅 본문은 tool_result 때문에 아주 커질 수 있다. 끊지 않고 상한까지 받되,
 // 넘치면 뒤를 버리고 파싱을 포기한다 (훅이 실패하면 Claude Code 에 오류가 뜬다).
 const HOOK_MAX = 12 * 1024 * 1024;
@@ -632,6 +652,52 @@ const server = http.createServer(async (req, res) => {
       const b = await readBody(req);
       const info = await focusWindow(Number(b.pid));
       return json(res, 200, { ok: true, info });
+    }
+
+    // 터미널에 붙여넣거나 끌어다 놓은 파일을 받아 디스크에 저장하고 경로를 돌려준다.
+    //
+    // PTY 는 텍스트만 흘려보내므로 이미지·파일 자체는 터미널로 못 보낸다.
+    // 대신 파일을 저장하고 그 **경로**를 프롬프트에 찍어주면 CLI 가 읽는다
+    // (공식 문서의 "Provide an image path to Claude" 방식).
+    if (url.pathname === '/api/paste-file' && req.method === 'POST') {
+      // 다 받고 나서 끊으면 클라이언트는 그냥 "네트워크 오류"만 본다.
+      // 길이를 미리 보고 제대로 된 메시지로 거절한다.
+      const declared = Number(req.headers['content-length'] || 0);
+      if (declared > PASTE_MAX) {
+        json(res, 413, {
+          error: '파일이 너무 큽니다 (' + Math.round(declared / 1048576) + 'MB · 최대 '
+               + (PASTE_MAX / 1048576) + 'MB)'
+        });
+        req.resume();      // 소켓을 끊지 말고 남은 본문을 흘려보낸다.
+        return;            // 끊으면 클라이언트가 응답 대신 네트워크 오류만 본다.
+      }
+      const raw = await readRawBody(req, PASTE_MAX);
+      if (!raw.length) throw new Error('빈 파일입니다');
+
+      // 파일 이름은 클라이언트가 준다. 경로 요소를 모두 떨어내고 쓴다.
+      const given = String(url.searchParams.get('name') || '').trim();
+      let base = path.basename(given.replace(/[\\/]/g, '_')) || 'paste';
+      base = base.replace(/[<>:"|?*\x00-\x1f]/g, '_').slice(-120);
+      if (!path.extname(base)) base += '.bin';
+
+      const dir = path.join(os.tmpdir(), 'cc-launcher', 'paste');
+      fs.mkdirSync(dir, { recursive: true });
+
+      const d = new Date();
+      const stamp = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0')
+        + String(d.getDate()).padStart(2, '0') + '-'
+        + String(d.getHours()).padStart(2, '0') + String(d.getMinutes()).padStart(2, '0')
+        + String(d.getSeconds()).padStart(2, '0');
+      let full = path.join(dir, stamp + '-' + base);
+      for (let i = 2; fs.existsSync(full); i++) {
+        full = path.join(dir, stamp + '-' + i + '-' + base);
+      }
+      // 위 조립이 어긋나 dir 밖으로 나가는 일이 없게 마지막으로 확인한다
+      if (!path.resolve(full).startsWith(path.resolve(dir) + path.sep)) {
+        throw new Error('저장 경로가 올바르지 않습니다');
+      }
+      fs.writeFileSync(full, raw);
+      return json(res, 200, { ok: true, path: full, bytes: raw.length });
     }
 
     // 폴더 선택 창. 고른 경로와 함께 "여기에 이미 세션이 있는지"도 알려준다.
