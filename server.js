@@ -448,6 +448,116 @@ function focusWindow(pid) {
   });
 }
 
+// ------------------------------------------------ 붙여넣은 파일 저장 / 내려받기
+
+const PASTE_DIR = path.join(os.tmpdir(), 'cc-launcher', 'paste');
+
+// 바이트를 붙여넣기 폴더에 저장하고 경로를 돌려준다.
+// 이름은 클라이언트가 주므로 경로 요소·금지문자를 모두 떨어내고 쓴다.
+function savePaste(raw, givenName) {
+  let base = path.basename(String(givenName || '').trim().replace(/[\\/]/g, '_')) || 'paste';
+  base = base.replace(/[<>:"|?*\x00-\x1f]/g, '_').slice(-120);
+  if (!path.extname(base)) base += '.bin';
+
+  fs.mkdirSync(PASTE_DIR, { recursive: true });
+  const d = new Date();
+  const stamp = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0')
+    + String(d.getDate()).padStart(2, '0') + '-'
+    + String(d.getHours()).padStart(2, '0') + String(d.getMinutes()).padStart(2, '0')
+    + String(d.getSeconds()).padStart(2, '0');
+
+  let full = path.join(PASTE_DIR, stamp + '-' + base);
+  for (let i = 2; fs.existsSync(full); i++) {
+    full = path.join(PASTE_DIR, stamp + '-' + i + '-' + base);
+  }
+  // 조립이 어긋나 폴더 밖으로 나가는 일이 없게 마지막으로 확인한다
+  if (!path.resolve(full).startsWith(path.resolve(PASTE_DIR) + path.sep)) {
+    throw new Error('저장 경로가 올바르지 않습니다');
+  }
+  fs.writeFileSync(full, raw);
+  return { path: full, bytes: raw.length };
+}
+
+// 끌어다 놓은 이미지 주소를 내려받아 저장한다.
+// 브라우저에서 직접 받으면 남의 사이트는 CORS 에 막히므로 서버가 받는다.
+function downloadToPaste(rawUrl) {
+  let u;
+  try { u = new URL(String(rawUrl)); } catch { throw new Error('주소를 읽을 수 없습니다'); }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new Error('http/https 주소만 받습니다');
+  }
+  const mod = u.protocol === 'https:' ? require('https') : require('http');
+
+  return new Promise((resolve, reject) => {
+    const hops = [];
+    const go = (target, depth) => {
+      if (depth > 5) return reject(new Error('리다이렉트가 너무 많습니다'));
+      hops.push(target.href);
+      const r = mod.get(target, { timeout: 20000 }, resp => {
+        // 리다이렉트 따라가기
+        if (resp.statusCode >= 300 && resp.statusCode < 400 && resp.headers.location) {
+          resp.resume();
+          let next;
+          try { next = new URL(resp.headers.location, target); } catch { return reject(new Error('리다이렉트 주소가 잘못됐습니다')); }
+          if (next.protocol !== 'http:' && next.protocol !== 'https:') {
+            return reject(new Error('http/https 주소만 받습니다'));
+          }
+          return go(next, depth + 1);
+        }
+        if (resp.statusCode !== 200) {
+          resp.resume();
+          return reject(new Error('받기 실패 (HTTP ' + resp.statusCode + ')'));
+        }
+        const len = Number(resp.headers['content-length'] || 0);
+        if (len > PASTE_MAX) {
+          resp.destroy();
+          return reject(new Error('파일이 너무 큽니다 (' + Math.round(len / 1048576) + 'MB)'));
+        }
+        const chunks = [];
+        let got = 0;
+        resp.on('data', c => {
+          got += c.length;
+          if (got > PASTE_MAX) { resp.destroy(); return reject(new Error('파일이 너무 큽니다')); }
+          chunks.push(c);
+        });
+        resp.on('end', () => {
+          const buf = Buffer.concat(chunks);
+          if (!buf.length) return reject(new Error('빈 파일입니다'));
+          // 이름은 주소의 마지막 조각에서. 없으면 content-type 으로 확장자를 짓는다.
+          let name = '';
+          try { name = path.basename(decodeURIComponent(target.pathname || '')); } catch { name = ''; }
+          if (!name || !path.extname(name)) {
+            const ct = String(resp.headers['content-type'] || '').split(';')[0].trim();
+            const ext = ct && ct.indexOf('/') > 0 ? '.' + ct.split('/')[1].split('+')[0] : '.bin';
+            name = (name || 'dropped') + ext;
+          }
+          try { resolve(savePaste(buf, name)); } catch (e) { reject(e); }
+        });
+        resp.on('error', () => reject(new Error('받는 중 끊겼습니다')));
+      });
+      r.on('timeout', () => { r.destroy(); reject(new Error('시간이 초과됐습니다')); });
+      r.on('error', e => reject(new Error(e.message)));
+    };
+    go(u, 0);
+  });
+}
+
+// 오래된 붙여넣기 파일은 서버가 뜰 때 정리한다. 안 지우면 계속 쌓인다.
+const PASTE_KEEP_DAYS = 7;
+function reapPasteDir() {
+  try {
+    const cut = Date.now() - PASTE_KEEP_DAYS * 24 * 60 * 60 * 1000;
+    let n = 0;
+    for (const f of fs.readdirSync(PASTE_DIR)) {
+      const p = path.join(PASTE_DIR, f);
+      try {
+        if (fs.statSync(p).mtimeMs < cut) { fs.unlinkSync(p); n++; }
+      } catch {}
+    }
+    if (n) console.log(`붙여넣기 임시 파일 ${n}개 정리 (${PASTE_KEEP_DAYS}일 경과)`);
+  } catch {}
+}
+
 // 윈도 기본 폴더 선택 창을 띄우고 고른 경로를 돌려준다.
 // 브라우저에는 진짜 폴더 경로를 주는 표준 방법이 없다(<input webkitdirectory> 는
 // 파일 이름만 준다). 그래서 서버가 네이티브 대화상자를 띄운다.
@@ -673,31 +783,18 @@ const server = http.createServer(async (req, res) => {
       }
       const raw = await readRawBody(req, PASTE_MAX);
       if (!raw.length) throw new Error('빈 파일입니다');
+      const saved = savePaste(raw, url.searchParams.get('name'));
+      return json(res, 200, { ok: true, path: saved.path, bytes: saved.bytes });
+    }
 
-      // 파일 이름은 클라이언트가 준다. 경로 요소를 모두 떨어내고 쓴다.
-      const given = String(url.searchParams.get('name') || '').trim();
-      let base = path.basename(given.replace(/[\\/]/g, '_')) || 'paste';
-      base = base.replace(/[<>:"|?*\x00-\x1f]/g, '_').slice(-120);
-      if (!path.extname(base)) base += '.bin';
-
-      const dir = path.join(os.tmpdir(), 'cc-launcher', 'paste');
-      fs.mkdirSync(dir, { recursive: true });
-
-      const d = new Date();
-      const stamp = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0')
-        + String(d.getDate()).padStart(2, '0') + '-'
-        + String(d.getHours()).padStart(2, '0') + String(d.getMinutes()).padStart(2, '0')
-        + String(d.getSeconds()).padStart(2, '0');
-      let full = path.join(dir, stamp + '-' + base);
-      for (let i = 2; fs.existsSync(full); i++) {
-        full = path.join(dir, stamp + '-' + i + '-' + base);
-      }
-      // 위 조립이 어긋나 dir 밖으로 나가는 일이 없게 마지막으로 확인한다
-      if (!path.resolve(full).startsWith(path.resolve(dir) + path.sep)) {
-        throw new Error('저장 경로가 올바르지 않습니다');
-      }
-      fs.writeFileSync(full, raw);
-      return json(res, 200, { ok: true, path: full, bytes: raw.length });
+    // 웹페이지에서 끌어온 이미지는 파일이 아니라 URL 로 온다. 받아서 저장한다.
+    //
+    // 브라우저에서 직접 받아오면 남의 사이트는 CORS 에 막히므로 서버가 받는다.
+    // 대신 사용자가 끌어다 놓은 그 주소만 받고, http/https 로 제한한다.
+    if (url.pathname === '/api/paste-url' && req.method === 'POST') {
+      const b = await readBody(req);
+      const saved = await downloadToPaste(String(b.url || ''));
+      return json(res, 200, { ok: true, path: saved.path, bytes: saved.bytes });
     }
 
     // 폴더 선택 창. 고른 경로와 함께 "여기에 이미 세션이 있는지"도 알려준다.
@@ -947,6 +1044,7 @@ server.listen(PORT, HOST, () => {
   console.log(`  실행 상태: ${LIVE_DIR}`);
   console.log('  내장 터미널: node-pty (ConPTY) - 브라우저를 닫아도 세션은 계속 살아 있습니다');
   console.log('\n창을 닫으면 서버가 종료됩니다. (Ctrl+C 로 종료 - 내장 터미널도 함께 정리)');
+  reapPasteDir();
   if (!process.env.CC_LAUNCHER_NO_OPEN) {
     spawn('cmd.exe', ['/c', 'start', '', addr], { detached: true, stdio: 'ignore' }).unref();
   }

@@ -673,48 +673,132 @@
     // 붙여넣기에 파일이 실려 오면 그것을 먼저 처리한다.
     // 텍스트 붙여넣기는 건드리지 않는다 - xterm 의 기본 경로로 그냥 흘려보낸다.
     body.addEventListener('paste', function (e) {
-      var dt = e.clipboardData;
-      if (!dt) return;
-      var files = [];
-      if (dt.files && dt.files.length) {
-        for (var i = 0; i < dt.files.length; i++) files.push(dt.files[i]);
-      } else if (dt.items) {
-        for (var k = 0; k < dt.items.length; k++) {
-          if (dt.items[k].kind === 'file') {
-            var f = dt.items[k].getAsFile();
-            if (f) files.push(f);
-          }
-        }
-      }
+      var files = filesFrom(e.clipboardData);
       if (!files.length) return;          // 평범한 텍스트 붙여넣기
       e.preventDefault();
       e.stopPropagation();
       sendFiles(v, files);
     }, true);
+  }
 
-    // 끌어다 놓기
-    var depth = 0;
-    function over(e) {
-      if (!e.dataTransfer || Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') < 0) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'copy';
+  // dataTransfer 에서 실제 파일을 긁어모은다.
+  // files 만 보면 안 된다 - 웹페이지에서 끌어온 이미지는 items 에만 들어온다.
+  function filesFrom(dt) {
+    var out = [];
+    if (!dt) return out;
+    if (dt.files && dt.files.length) {
+      for (var i = 0; i < dt.files.length; i++) out.push(dt.files[i]);
+      return out;
     }
-    body.addEventListener('dragenter', function (e) {
-      over(e);
-      if (e.defaultPrevented) { depth++; v.el.classList.add('dropfile'); }
+    if (dt.items) {
+      for (var k = 0; k < dt.items.length; k++) {
+        if (dt.items[k].kind === 'file') {
+          var f = dt.items[k].getAsFile();
+          if (f) out.push(f);
+        }
+      }
+    }
+    return out;
+  }
+
+  // 웹페이지에서 끌어온 이미지는 파일이 아니라 URL 로 온다
+  function urlFrom(dt) {
+    if (!dt) return null;
+    var s = '';
+    try { s = dt.getData('text/uri-list') || dt.getData('text/plain') || ''; } catch (e) {}
+    s = String(s).split('\n')[0].trim();
+    return /^https?:\/\//i.test(s) ? s : null;
+  }
+
+  // ------------------------------------------------------------ 끌어다 놓기
+  //
+  // 문서 전체에서 받는다. 패인 안에만 걸면 머리글·패인 사이 틈처럼 살짝 빗나간 곳에
+  // 놓았을 때 브라우저 기본 동작이 나가서 **새 탭에 이미지가 열려버린다.**
+  // 그리고 그때는 우리 drop 핸들러가 안 돌아 오버레이가 화면에 그대로 남는다.
+  // 그래서 (1) 터미널 탭에서는 문서 수준에서 무조건 기본 동작을 막고,
+  //        (2) 오버레이는 어떤 경로로 끝나든 반드시 걷어낸다.
+
+  var dragPane = null;      // 지금 오버레이가 걸린 패인
+
+  function markPane(el) {
+    if (dragPane === el) return;
+    if (dragPane) dragPane.classList.remove('dropfile');
+    dragPane = el;
+    if (dragPane) dragPane.classList.add('dropfile');
+  }
+  function clearDrag() { markPane(null); }
+
+  // 포인터 밑의 패인. 없으면 활성 패인으로 보낸다.
+  function paneAt(x, y) {
+    var el = document.elementFromPoint(x, y);
+    var pane = el && el.closest ? el.closest('.termpane') : null;
+    if (pane && views.has(pane.dataset.term)) return views.get(pane.dataset.term);
+    if (active && views.has(active)) return views.get(active);
+    return null;
+  }
+
+  function dragHasPayload(dt) {
+    if (!dt) return false;
+    var t = dt.types || [];
+    for (var i = 0; i < t.length; i++) {
+      if (t[i] === 'Files' || t[i] === 'text/uri-list') return true;
+    }
+    return false;
+  }
+
+  // 터미널 화면이 떠 있을 때만 가로챈다
+  function termVisible() {
+    var w = document.getElementById('termwrap');
+    return w && !w.hidden;
+  }
+
+  function initDrop() {
+    document.addEventListener('dragover', function (e) {
+      if (!termVisible() || !dragHasPayload(e.dataTransfer)) return;
+      e.preventDefault();                       // 이걸 해야 drop 이 우리에게 온다
+      try { e.dataTransfer.dropEffect = 'copy'; } catch (err) {}
+      var v = paneAt(e.clientX, e.clientY);
+      markPane(v ? v.el : null);
     });
-    body.addEventListener('dragover', over);
-    body.addEventListener('dragleave', function () {
-      if (--depth <= 0) { depth = 0; v.el.classList.remove('dropfile'); }
-    });
-    body.addEventListener('drop', function (e) {
-      depth = 0;
-      v.el.classList.remove('dropfile');
-      if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
-      e.preventDefault();
+
+    document.addEventListener('drop', function (e) {
+      if (!termVisible() || !dragHasPayload(e.dataTransfer)) { clearDrag(); return; }
+      e.preventDefault();                       // 새 탭으로 열리는 것을 막는다
       e.stopPropagation();
-      sendFiles(v, e.dataTransfer.files);
+      var v = paneAt(e.clientX, e.clientY);
+      clearDrag();
+      if (!v) { note('놓을 터미널을 찾지 못했습니다', true); return; }
+
+      var files = filesFrom(e.dataTransfer);
+      if (files.length) { sendFiles(v, files); return; }
+
+      var url = urlFrom(e.dataTransfer);
+      if (url) { sendUrl(v, url); return; }
+      note('여기서 가져올 수 있는 파일이 없습니다', true);
     });
+
+    // 오버레이가 남지 않게 끝나는 모든 길목에서 걷어낸다
+    document.addEventListener('dragleave', function (e) {
+      // 창 밖으로 나갔을 때만 (relatedTarget 이 없다)
+      if (!e.relatedTarget) clearDrag();
+    });
+    document.addEventListener('dragend', clearDrag);
+    window.addEventListener('blur', clearDrag);
+    document.addEventListener('mouseup', clearDrag);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') clearDrag();
+    });
+  }
+
+  // 웹페이지에서 끌어온 이미지 주소를 서버가 내려받아 저장한다
+  function sendUrl(v, url) {
+    note('이미지를 받는 중…');
+    post('/api/paste-url', { url: url }).then(function (j) {
+      if (j.error) { note('받기 실패: ' + j.error, true); return; }
+      sendMsg(v, { t: 'i', d: quoteIfNeeded(j.path) + ' ' });
+      try { v.term.focus(); } catch (e) {}
+      note('경로를 넣었습니다 · ' + humanSize(j.bytes));
+    }, function (e) { note('받기 실패: ' + e.message, true); });
   }
 
   function connect(v) {
@@ -882,6 +966,7 @@
   }
 
   window.addEventListener('resize', function () { apply(); });
+  initDrop();
 
   CC.term = {
     init: init, open: open, sync: sync, refit: refit,
