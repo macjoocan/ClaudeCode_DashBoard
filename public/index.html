@@ -80,6 +80,14 @@
     font-size:14px;line-height:1}
   .icon:hover{color:var(--accent2)}
   .icon.on{color:var(--busy)}
+  /* 세션 숨기기 / 삭제 - 평소엔 흐리게, 카드에 마우스를 올리면 드러난다 */
+  .icon.sx{font-size:11px;opacity:.25;transition:opacity .12s}
+  .card:hover .icon.sx,.s:hover .icon.sx{opacity:.75}
+  .icon.sx:hover{opacity:1}
+  .icon.sx.del:hover{color:var(--bad)}
+  .icon.sx:disabled{opacity:.12;cursor:default}
+  .icon.sx:disabled:hover{color:var(--dim2)}
+  .tag.hid{color:var(--dim2);border-style:dashed}
 
   /* ---------------- 카드 그리드 ---------------- */
   main{padding:16px 20px 70px;max-width:1600px;margin:0 auto}
@@ -708,6 +716,9 @@ function saveCollapsed(){
 }
 // 목록 보기에서는 마지막 프롬프트 같은 본문을 걷어낸다
 function terse(){ return VIEW !== 'card'; }
+
+// 숨긴 세션을 볼지. 숨김은 파일을 건드리지 않고 목록에서만 뺀다.
+let SHOWHIDDEN = localStorage.getItem('ccl.showhidden') === '1';
 let openSess = null, openLimit = 40, transTimer = null;
 
 /* ---------------------------------------------------------- 유틸 */
@@ -941,9 +952,29 @@ async function launch(action, cwd, sessionId, title, provider){
 /* ---------------------------------------------------------- 렌더 */
 function terms(){ return $('#q').value.trim().toLowerCase().split(/\s+/).filter(Boolean); }
 function hit(p, s, ts){
+  // 숨긴 세션은 기본으로 목록에서 뺀다. 실행 중인 것은 숨겨도 보여준다 -
+  // 지금 돌고 있는 세션이 화면에서 사라지면 찾을 길이 없어진다.
+  if (s.hidden && !SHOWHIDDEN && !s.live) return false;
   if (!ts.length) return true;
   const h = (p.name+' '+p.cwd+' '+(s.title||'')+' '+(s.firstPrompt||'')+' '+(s.last||'')).toLowerCase();
   return ts.every(t => h.includes(t));
+}
+
+// 숨긴 프로젝트도 실행 중인 세션이 있으면 보여준다 (지금 도는 걸 놓치면 안 된다)
+function projHidden(p){
+  return p.hidden && !SHOWHIDDEN && !p.liveCount;
+}
+
+// 숨김으로 표시된 것 수. 실행 중이라 화면에 남아 있는 것도 센다 -
+// 숨겼는데 "숨김 없음" 이라고 나오면 눌린 건지 아닌지 알 수가 없다.
+// 그런 카드에는 '숨김' 꼬리표가 붙어 왜 아직 보이는지 알 수 있다.
+function hiddenCount(){
+  let s = 0, pr = 0;
+  for (const p of DATA){
+    if (p.hidden) pr++;
+    for (const x of p.sessions) if (x.hidden) s++;
+  }
+  return { sess: s, proj: pr, total: s + pr };
 }
 
 // 세션 상태에 맞는 주 버튼 하나
@@ -952,6 +983,19 @@ function liveBtn(p, s, emb){
   if (e) return '<button class="btn live xs" data-goterm="'+esc(e.id)+'">터미널로 이동 · '+esc(statusLabel(s.live)||'대기 중')+'</button>';
   if (s.live) return '<button class="btn live xs" data-focus="'+s.live.pid+'">창 띄우기 · '+esc(statusLabel(s.live))+'</button>';
   return '<button class="btn primary xs" data-act="resume" data-provider="'+esc(s.provider)+'" data-cwd="'+esc(p.cwd)+'" data-sid="'+esc(s.id)+'" data-title="'+esc(s.title||'')+'">이어하기</button>';
+}
+
+// 세션 하나에 붙는 숨기기 / 삭제 버튼.
+// 실행 중인 세션은 삭제를 막는다 - 쓰고 있는 기록 파일을 치우면 그 세션이 깨진다.
+function sessTools(s, vk){
+  const live = !!s.live;
+  return '<button class="icon sx" data-hide="'+vk+'" title="'
+    + (s.hidden ? '다시 보이기' : '목록에서 숨기기 (파일은 그대로 둡니다)')
+    + '">'+(s.hidden ? '◐' : '○')+'</button>'
+    + '<button class="icon sx del" data-delsess="'+vk+'"'
+    + (live ? ' disabled title="실행 중인 세션은 삭제할 수 없습니다"'
+            : ' title="세션 기록을 휴지통으로 옮깁니다 (되돌릴 수 있음)"')
+    + '>🗑</button>';
 }
 
 function sessionRow(p, s, emb){
@@ -963,9 +1007,11 @@ function sessionRow(p, s, emb){
     +   '<span class="st '+statusClass(s.live)+'" title="'+esc(statusLabel(s.live) || '실행 중 아님')+'"></span>'
     +   '<span class="stitle" title="'+esc(s.title||'')+'">'+esc(s.title || '(제목 없음)')+'</span>'
     +   (e ? '<span class="tag emb">대시보드</span>' : '')
+    +   (s.hidden ? '<span class="tag hid">숨김</span>' : '')
     +   '<span class="swhen" title="'+stamp(s.mtime)+'">'+ago(s.mtime)+'</span>'
     +   usageSpan(s)
     +   '<button class="icon '+(s.fav?'on':'')+'" data-fav="'+vk+'" title="즐겨찾기">'+(s.fav?'★':'☆')+'</button>'
+    +   sessTools(s, vk)
     + '</div>'
     + (s.last && s.last !== s.title ? '<div class="slast" title="'+esc(s.last)+'">'+esc(s.last)+'</div>' : '')
     + '<div class="sacts">'
@@ -1015,6 +1061,7 @@ function renderListBar(shown, foldable, foldedN){
   const b = (attr, v, txt, cur, tip) =>
     '<button data-'+attr+'="'+v+'" class="'+(cur===v?'on':'')+'" title="'+tip+'">'+txt+'</button>';
   const codexOn = !!(ENV && ENV.codex);
+  const hc = hiddenCount();
   bar.innerHTML =
       '<button class="pick" data-pick="claude"'
     +   ' title="폴더를 골라 그 안에서 새 Claude 세션을 시작합니다.&#10;'
@@ -1026,6 +1073,15 @@ function renderListBar(shown, foldable, foldedN){
     + '<span class="lb">접기</span>'
     + '<button data-fold="all" title="모든 카드를 머리글만 남기고 접는다">전체 접기</button>'
     + '<button data-fold="none" title="카드와 묶음을 모두 펼친다">전체 펼치기</button>'
+    + '<div class="sep"></div>'
+    + '<span class="lb">숨김</span>'
+    + '<button data-showhidden="1" class="' + (SHOWHIDDEN ? 'on' : '') + '"'
+    +   ' title="숨긴 프로젝트·세션도 함께 보여준다">'
+    +   (hc.total ? '숨김 ' + (hc.proj ? '프로젝트 ' + hc.proj : '')
+                  + (hc.proj && hc.sess ? ' · ' : '')
+                  + (hc.sess ? '세션 ' + hc.sess : '')
+                : '숨김 없음') + '</button>'
+    + (hc.total ? '<button data-unhideall="1" title="숨김을 전부 해제한다">모두 해제</button>' : '')
     + '<div class="sep"></div>'
     + '<span class="lb">보기</span>'
     + b('listview','card','카드',VIEW,'지금까지의 카드 보기')
@@ -1093,11 +1149,16 @@ function projectCard(p, ss, emb){
     +       (p.waitCount ? '<span class="tag run">● 승인 대기 '+p.waitCount+'</span>' : '')
     +       (embN ? '<span class="tag emb">대시보드 '+embN+'</span>' : '')
     +       (p.favCount ? '<span class="tag">★ '+p.favCount+'</span>' : '')
+    +       (p.hidden ? '<span class="tag hid">숨김</span>' : '')
     +       projectUsageTag(p)
     +       (p.exists ? '' : '<span class="tag err">폴더 없음</span>')
     +     '</div>'
     +   '</div>'
     +   '<button class="icon '+(p.pinned?'on':'')+'" data-pin="'+esc(p.key)+'" title="상단 고정">'+(p.pinned?'★':'☆')+'</button>'
+    +   '<button class="icon sx" data-hideproj="'+esc(p.key)+'" title="'
+    +     (p.hidden ? '이 프로젝트 다시 보이기'
+                    : '이 프로젝트를 통째로 숨긴다 (파일은 그대로, 실행 중이면 계속 보임)')
+    +     '">'+(p.hidden ? '◐' : '○')+'</button>'
     + '</div>'
     + sessionGroup(p, claudeSs, emb, 'Claude Code', p.key+'|claude')
     + sessionGroup(p, codexSs, emb, 'Codex', p.key+'|codex')
@@ -1133,11 +1194,13 @@ function sessionCard(s, emb){
     +       (e ? '<span class="tag emb">대시보드 터미널</span>' : '')
     +       '<span class="tag">'+s.sizeKB+'KB</span>'
     +       (s.provider === 'codex' ? '<span class="tag">Codex</span>' : '')
+    +       (s.hidden ? '<span class="tag hid">숨김</span>' : '')
     +       (p.exists ? '' : '<span class="tag err">폴더 없음</span>')
     +       usageSpan(s)
     +     '</div>'
     +   '</div>'
     +   '<button class="icon '+(s.fav?'on':'')+'" data-fav="'+vk+'" title="즐겨찾기">'+(s.fav?'★':'☆')+'</button>'
+    +   sessTools(s, vk)
     + '</div>'
     + '<div class="body"><div class="lastq" data-view="'+vk+'" title="클릭하면 대화 보기">'
     +   esc(s.last||s.title||'')+'</div></div>'
@@ -1187,6 +1250,7 @@ function render(){
     const out = [];
     let foldedN = 0;
     for (const p of sortProjects(DATA)){
+      if (projHidden(p)) continue;                 // 프로젝트째 숨김
       const ss = p.sessions.filter(s => hit(p, s, ts));
       if (!ss.length) continue;
       if (collapsed.has(p.key)) foldedN++;
@@ -1198,8 +1262,10 @@ function render(){
     return;
   }
 
+  // 즐겨찾기·실행 중 탭에서도 숨긴 프로젝트의 세션은 뺀다
   const pick = TAB === 'fav' ? (s=>s.fav) : (s=>s.live);
-  const ss = sortSessions(allSessions().filter(s => pick(s) && hit(s.project, s, ts)));
+  const ss = sortSessions(allSessions().filter(s =>
+    pick(s) && !projHidden(s.project) && hit(s.project, s, ts)));
   renderListBar(ss.length, true, ss.filter(s=>collapsed.has(s.id)).length);
   list.innerHTML = ss.length ? ss.map(s=>sessionCard(s,emb)).join('')
     : (TAB === 'fav'
@@ -1396,6 +1462,7 @@ document.addEventListener('click', async function(e){
     + '[data-act],[data-focus],[data-view],[data-goterm],[data-closeterm],[data-lay],[data-ori],[data-solo],'
     + '[data-reloadterm],[data-restartterm],[data-resetsize],[data-movepane],'
     + '[data-fold],[data-listview],[data-sort],[data-pick],'
+    + '[data-hide],[data-hideproj],[data-delsess],[data-showhidden],[data-unhideall],'
     + '[data-openfile],[data-hookinstall],[data-hookuninstall],#t-new,.m.thinking');
   if (!t) return;
 
@@ -1452,6 +1519,56 @@ document.addEventListener('click', async function(e){
     }catch(err){ toast('폴더 실행 실패: ' + err.message, true); }
     t.disabled = false;
     t.textContent = was;
+    return;
+  }
+
+  // ---- 세션 숨기기 / 삭제 ----
+  if (t.dataset.hide){
+    e.stopPropagation();
+    const [provider, slug, id] = t.dataset.hide.split('|');
+    try{
+      const j = await post('/api/hide', { provider, slug, id });
+      toast(j.on ? '숨겼습니다 · 도구 막대의 "숨김"에서 다시 볼 수 있습니다' : '다시 보이게 했습니다');
+      await load();
+    }catch(err){ toast('실패: ' + err.message, true); }
+    return;
+  }
+  if (t.dataset.hideproj){
+    e.stopPropagation();
+    try{
+      const j = await post('/api/hide', { project: t.dataset.hideproj });
+      toast(j.on ? '프로젝트를 숨겼습니다 · 실행 중인 세션이 있으면 계속 보입니다'
+                 : '다시 보이게 했습니다');
+      await load();
+    }catch(err){ toast('실패: ' + err.message, true); }
+    return;
+  }
+  if (t.dataset.showhidden !== undefined){
+    SHOWHIDDEN = !SHOWHIDDEN;
+    localStorage.setItem('ccl.showhidden', SHOWHIDDEN ? '1' : '0');
+    render();
+    return;
+  }
+  if (t.dataset.unhideall !== undefined){
+    try{ await post('/api/hide', { clear: true }); toast('숨김을 모두 해제했습니다'); await load(); }
+    catch(err){ toast('실패: ' + err.message, true); }
+    return;
+  }
+  if (t.dataset.delsess){
+    e.stopPropagation();
+    const [provider, slug, id] = t.dataset.delsess.split('|');
+    const s = allSessions().find(x => x.id === id);
+    const name = (s && (s.title || s.last)) || id;
+    if (!confirm('이 세션 기록을 삭제할까요?\n\n' + name.slice(0, 80)
+               + '\n\n지우지 않고 휴지통으로 옮깁니다:\n'
+               + '~/.claude/.cc-launcher-trash\n\n삭제할까요?')) return;
+    t.disabled = true;
+    try{
+      const j = await post('/api/session/delete', { provider, slug, id });
+      if (j.failed && j.failed.length) toast('삭제 실패: ' + j.failed[0].error, true);
+      else toast('휴지통으로 옮겼습니다');
+      await load();
+    }catch(err){ toast('삭제 실패: ' + err.message, true); }
     return;
   }
 

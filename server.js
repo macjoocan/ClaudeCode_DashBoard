@@ -40,6 +40,7 @@ const LIVE_DIR = path.join(CLAUDE_HOME, 'sessions'); // <pid>.json = 살아있�
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PINS_FILE = path.join(__dirname, 'pins.json');
 const FAVS_FILE = path.join(__dirname, 'favorites.json'); // "<slug>/<sessionId>" 목록
+const HIDDEN_FILE = path.join(__dirname, 'hidden.json');  // 목록에서 숨긴 세션 (같은 형식)
 const FOCUS_PS1 = path.join(__dirname, 'focus-window.ps1');
 
 const HEAD_BYTES = 96 * 1024;
@@ -216,6 +217,7 @@ const cache = new Map(); // file -> { mtimeMs, size, info }
 function scan() {
   const live = liveSessions();
   const favs = new Set(loadFavs());
+  const hid = new Set(loadHidden());
   const projects = new Map();
   let dirs = [];
   try { dirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true }); } catch {}
@@ -266,6 +268,7 @@ function scan() {
         last: info.lastPrompt,
         live: live.get(id) || null,
         fav: favs.has(d.name + '/' + id),
+        hidden: hid.has(d.name + '/' + id),
         subagents: info.subagents,
       });
     }
@@ -295,6 +298,7 @@ function scan() {
       title: s.title, firstPrompt: s.firstPrompt, last: s.last,
       live: codexLive.get(s.id) || null,
       fav: favs.has('codex:' + s.id),
+      hidden: hid.has('codex:' + s.id),
       subagents: null,
       threadSource: s.threadSource, parentId: s.parentId,
       tokens: s.tokens,
@@ -304,6 +308,7 @@ function scan() {
   const pins = loadPins();
   const list = [...projects.values()];
   for (const p of list) {
+    p.hidden = hid.has('proj:' + p.key);
     p.sessions.sort((a, b) => {
       const la = a.live ? 1 : 0, lb = b.live ? 1 : 0;
       return (lb - la) || (b.mtime - a.mtime);
@@ -330,6 +335,20 @@ function loadFavs() {
 }
 function saveFavs(favs) {
   try { fs.writeFileSync(FAVS_FILE, JSON.stringify(favs, null, 2), 'utf8'); } catch {}
+}
+// 숨긴 세션. 파일은 그대로 두고 목록에서만 뺀다 (삭제와 달리 되돌리기 쉽다).
+function loadHidden() {
+  try { return JSON.parse(fs.readFileSync(HIDDEN_FILE, 'utf8')); } catch { return []; }
+}
+function saveHidden(list) {
+  try { fs.writeFileSync(HIDDEN_FILE, JSON.stringify(list, null, 2), 'utf8'); } catch {}
+}
+// 즐겨찾기와 같은 토큰 형식을 쓴다: codex 는 "codex:<id>", claude 는 "<slug>/<id>"
+function sessionToken(provider, slug, id) {
+  if (!SAFE_ID.test(String(id || ''))) throw new Error('잘못된 세션 지정');
+  if (provider === 'codex') return 'codex:' + id;
+  if (!SAFE_SLUG.test(String(slug || ''))) throw new Error('잘못된 세션 지정');
+  return `${slug}/${id}`;
 }
 
 // -------------------------------------------------------- 대화 내용 (트랜스크립트)
@@ -817,6 +836,56 @@ const server = http.createServer(async (req, res) => {
       const b = await readBody(req);
       if (b.target === 'vscode') openVSCode(b.cwd); else openFolder(b.cwd);
       return json(res, 200, { ok: true });
+    }
+
+    // 숨기기 토글. 파일은 건드리지 않는다. 세션 하나 또는 프로젝트 통째로.
+    if (url.pathname === '/api/hide' && req.method === 'POST') {
+      const b = await readBody(req);
+      const list = loadHidden();
+      if (b.clear) { saveHidden([]); return json(res, 200, { ok: true, hidden: [] }); }
+      // 프로젝트는 'proj:<cwd 소문자>' 로 넣는다. 세션 토큰과 섞이지 않는다.
+      const token = b.project
+        ? 'proj:' + String(b.project).toLowerCase()
+        : sessionToken(b.provider, b.slug, b.id);
+      const i = list.indexOf(token);
+      if (i >= 0) list.splice(i, 1); else list.push(token);
+      saveHidden(list);
+      return json(res, 200, { ok: true, hidden: list, on: i < 0 });
+    }
+
+    // 세션 삭제. 지우지 않고 휴지통으로 옮긴다 (되돌릴 수 있게).
+    if (url.pathname === '/api/session/delete' && req.method === 'POST') {
+      const b = await readBody(req);
+      const ids = Array.isArray(b.sessions) ? b.sessions : [b];
+      const done = [], failed = [];
+      for (const s of ids) {
+        try {
+          if (s.provider === 'codex') throw new Error('Codex 세션은 아직 삭제할 수 없습니다');
+          if (!SAFE_SLUG.test(String(s.slug || '')) || !SAFE_ID.test(String(s.id || '')))
+            throw new Error('잘못된 세션 지정');
+          const file = path.join(PROJECTS_DIR, s.slug, s.id + '.jsonl');
+          if (!path.resolve(file).startsWith(path.resolve(PROJECTS_DIR) + path.sep))
+            throw new Error('경로가 올바르지 않습니다');
+          if (!fs.existsSync(file)) throw new Error('세션 파일이 없습니다');
+          const moved = cfgWrite.trashPath(file, 'session-' + s.id.slice(0, 8));
+          // 서브에이전트 기록 폴더가 있으면 같이 옮긴다
+          const subDir = path.join(PROJECTS_DIR, s.slug, s.id);
+          if (fs.existsSync(subDir)) {
+            try { cfgWrite.trashPath(subDir, 'session-' + s.id.slice(0, 8) + '-sub'); } catch {}
+          }
+          // 즐겨찾기·숨김 목록에서도 뺀다
+          const token = sessionToken(s.provider, s.slug, s.id);
+          const favs = loadFavs(); const fi = favs.indexOf(token);
+          if (fi >= 0) { favs.splice(fi, 1); saveFavs(favs); }
+          const hid = loadHidden(); const hi = hid.indexOf(token);
+          if (hi >= 0) { hid.splice(hi, 1); saveHidden(hid); }
+          done.push({ id: s.id, trashed: moved });
+        } catch (e) {
+          failed.push({ id: s && s.id, error: String((e && e.message) || e) });
+        }
+      }
+      // scan() 은 매번 디렉터리를 다시 읽으므로 삭제분은 저절로 빠진다
+      return json(res, 200, { ok: true, deleted: done.length, done, failed });
     }
 
     if (url.pathname === '/api/fav' && req.method === 'POST') {

@@ -626,5 +626,6 @@ module.exports = {
   setSetting, addPermission, removePermission, addDirectory, removeDirectory,
   listBackups, restoreBackup,
   createAgent, deleteAgent, createSkill, deleteSkill, readDoc, writeDoc,
+  trashPath: trash,   // 세션 삭제도 같은 휴지통을 쓴다
   mcpList, mcpAdd, mcpRemove, setProjectMcp, setPluginEnabled,
 };
