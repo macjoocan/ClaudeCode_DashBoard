@@ -64,6 +64,25 @@
   .tokbar .tk.sub .tv{color:var(--dim);font-weight:500;font-size:11.5px}
   .tokbar:hover{border-color:var(--accent)}
 
+  /* 사용 한도 게이지 - 토큰 바와 같은 틀, 값 아래에 채움 막대 */
+  .limbar{display:flex;gap:0;align-items:stretch;flex:none;cursor:help;
+    background:var(--panel2);border:1px solid var(--line);border-radius:8px;overflow:hidden;
+    font-size:11.5px;line-height:1}
+  .limbar:hover{border-color:var(--accent)}
+  .limbar .lg{display:flex;flex-direction:column;gap:3px;padding:5px 10px;justify-content:center;min-width:64px}
+  .limbar .lg+.lg{border-left:1px solid var(--line)}
+  .limbar .ll{color:var(--dim2);font-size:9.5px;letter-spacing:.2px;
+    display:flex;gap:5px;align-items:baseline;justify-content:space-between}
+  .limbar .lr{color:var(--dim2);font-size:9px;opacity:.85}
+  .limbar .lv{font-weight:650;font-size:12.5px;font-variant-numeric:tabular-nums}
+  .limbar .lbar{height:3px;border-radius:2px;background:var(--line2);overflow:hidden}
+  .limbar .lbar i{display:block;height:100%;background:var(--ok);border-radius:2px}
+  /* 60% 넘으면 노랑, 85% 넘으면 빨강 */
+  .limbar .lg.warn .lv{color:var(--busy)} .limbar .lg.warn .lbar i{background:var(--busy)}
+  .limbar .lg.hot .lv{color:var(--bad)}   .limbar .lg.hot .lbar i{background:var(--bad)}
+  .limbar .lg.plan{cursor:default}
+  .limbar .lg.plan .lv{color:var(--dim);font-weight:600;font-size:11px}
+
   /* ---------------- 버튼 ---------------- */
   .btn{background:var(--panel2);border:1px solid var(--line);color:var(--fg);
     border-radius:7px;padding:5px 10px;font:inherit;font-size:12.5px;cursor:pointer;white-space:nowrap}
@@ -668,6 +687,7 @@
       <button id="m-emb" data-mode="embed">대시보드</button>
       <button id="m-ext" data-mode="window">새 창</button>
     </div>
+    <span id="lim" class="limbar" hidden></span>
     <span id="tok" class="tokbar" hidden></span>
     <button class="btn ghost" id="layout" title="한 줄에 하나씩 넓게 보기">넓게</button>
     <button class="btn ghost" id="refresh" title="다시 스캔">&#8635;</button>
@@ -866,6 +886,75 @@ async function loadTokens(){
     TOK = await (await fetch('/api/tokens',{cache:'no-store'})).json();
   }catch{ return; }
   renderTokens();
+}
+
+/* ------------------------------------------------ 사용 한도 (/usage 와 같은 정보) */
+//
+// tokens.js 는 세션 기록을 세서 "내가 얼마나 썼나"를 알려주지만 한도까지 얼마나
+// 남았는지는 모른다. 그건 서버만 안다. /api/limits 가 물어봐 준다.
+// 비공식 endpoint 라 안 되면 이 칸만 조용히 숨긴다.
+
+let LIM = null;
+
+async function loadLimits(){
+  try { LIM = await (await fetch('/api/limits',{cache:'no-store'})).json(); }
+  catch { return; }
+  renderLimits();
+}
+
+// "2시간 12분 뒤" 처럼. 지났으면 '곧'.
+function untilText(iso){
+  const t = Date.parse(iso || '');
+  if (!isFinite(t)) return '';
+  const m = Math.round((t - Date.now()) / 60000);
+  if (m <= 0) return '곧';
+  if (m < 60) return m + '분 뒤';
+  const h = Math.floor(m / 60), mm = m % 60;
+  if (h < 24) return h + '시간' + (mm ? ' ' + mm + '분' : '') + ' 뒤';
+  const d = Math.floor(h / 24);
+  return d + '일' + (h % 24 ? ' ' + (h % 24) + '시간' : '') + ' 뒤';
+}
+function stampLocal(iso){
+  const t = Date.parse(iso || '');
+  return isFinite(t) ? new Date(t).toLocaleString('ko-KR') : '';
+}
+function sevClass(p){ return p >= 85 ? 'hot' : (p >= 60 ? 'warn' : ''); }
+
+function renderLimits(){
+  const el = $('#lim');
+  if (!LIM || !LIM.ok || !LIM.data || !LIM.data.gauges.length){ el.hidden = true; return; }
+  const d = LIM.data;
+  el.hidden = false;
+
+  // 헤더에는 5시간·주간만. 나머지(모델별 등)는 툴팁에 둔다.
+  const main = d.gauges.filter(g => g.label === '5시간 세션' || g.label === '주간');
+  const show = main.length ? main : d.gauges.slice(0, 2);
+
+  el.innerHTML =
+      (d.plan ? '<div class="lg plan"><span class="ll">플랜</span>'
+              + '<span class="lv">' + esc(d.plan) + '</span></div>' : '')
+    + show.map(g =>
+        '<div class="lg ' + sevClass(g.percent) + '">'
+        + '<span class="ll">' + esc(g.label.replace('5시간 세션','5시간'))
+        +   '<span class="lr">' + esc(untilText(g.resetsAt)) + '</span></span>'
+        + '<span class="lv">' + g.percent + '%</span>'
+        + '<span class="lbar"><i style="width:' + Math.min(100, Math.max(0, g.percent)) + '%"></i></span>'
+        + '</div>').join('');
+
+  const lines = ['사용 한도 (Claude 서버 기준)', ''];
+  if (d.plan) lines.push('플랜: ' + d.plan, '');
+  for (const g of d.gauges){
+    lines.push((g.active ? '● ' : '  ') + g.label + '  ' + g.percent + '%');
+    if (g.resetsAt) lines.push('    리셋 ' + stampLocal(g.resetsAt) + '  (' + untilText(g.resetsAt) + ')');
+  }
+  if (d.extra && d.extra.enabled){
+    lines.push('', '추가 사용량 켜짐'
+      + (d.extra.percent != null ? ' · ' + d.extra.percent + '%' : ''));
+  }
+  lines.push('', '● 표시가 지금 적용 중인 한도입니다.',
+    '아래 토큰 수치와 다른 값입니다 — 저건 내 기록을 센 것,',
+    '이건 서버가 알려주는 남은 한도입니다.');
+  el.title = lines.join('\n');
 }
 
 function renderTokens(){
@@ -2044,7 +2133,10 @@ CC.live.onUpdate = function(ev){
   CC.harness.onLiveEvent(ev);
   CC.timeline.onEvent();
   // 응답이 끝나면 usage 가 기록되므로 그때 토큰 표시를 갱신한다
-  if (ev && (ev.event === 'Stop' || ev.event === 'StopFailure')) setTimeout(loadTokens, 1200);
+  if (ev && (ev.event === 'Stop' || ev.event === 'StopFailure')) {
+    setTimeout(loadTokens, 1200);
+    setTimeout(loadLimits, 2000);   // 방금 쓴 만큼 한도도 움직였을 것이다
+  }
   const n = CC.live.activeCount();
   const agents = CC.live.agentCount();
   [['#n-graph', n], ['#n-flow', n ? (agents ? n + '·' + agents : n) : '']].forEach(function(p){
@@ -2059,12 +2151,15 @@ $('#layout').textContent = WIDE ? '카드' : '넓게';
 load();
 loadUsage();    // 세션별 사용량 - 도착하면 render() 가 다시 그려서 채운다
 loadTokens();   // 헤더 바 전체 합계
+loadLimits();   // 사용 한도 (서버에 물어본다)
 // 구성은 경고 개수를 탭 뱃지에 띄우기 위해 시작할 때 한 번 읽어둔다
 CC.harness.loadConfig($('#cfgwrap')).then(updateCfgBadge);
 setInterval(load, 60000);
 setInterval(pollLive, 4000);
 setInterval(loadTerms, 5000);
 setInterval(loadTokens, 20000);   // 변경된 파일만 다시 읽으므로 가볍다
+// 한도는 서버가 1분 캐시하므로 더 자주 물어도 소용없다
+setInterval(loadLimits, 60000);
 </script>
 </body>
 </html>

@@ -30,6 +30,7 @@ const codex = require('./codex.js');
 const usage = require('./usage.js');   // 세션 하나의 사용량 (카드·대화 헤더)
 const tokens = require('./tokens');    // 전체 합계 (헤더 바: 오늘 / 최근 5시간)
 const scribe = require('./scribe');    // 마크다운 편집기 (SCRIBE 빌드물 + 파일 브리지)
+const limits = require('./limits');    // 사용 한도(%) 와 리셋 시각
 
 const HOOK_URL = `http://${'127.0.0.1'}:${Number(process.env.CC_LAUNCHER_PORT || 7788)}/api/hook`;
 
@@ -1079,6 +1080,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ------- 토큰 사용량 -------
+    // 사용 한도. 비공식 endpoint 라 실패해도 200 으로 ok:false 만 돌려준다 -
+    // 헤더 바가 오류로 깨지면 안 된다.
+    if (url.pathname === '/api/limits') {
+      return json(res, 200, await limits.limits());
+    }
+
     if (url.pathname === '/api/tokens') {
       return json(res, 200, tokens.usage());
     }
