@@ -477,6 +477,16 @@
   .mform{display:flex;gap:6px;flex-wrap:wrap;margin:9px 0}
   .mform .hfilter{margin:0;width:auto;flex:1;min-width:150px}
   .mform .hfilter.wide{flex:2.4;min-width:240px}
+  /* 에이전트 도구 고르기 */
+  .toolpick{display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin:-3px 0 9px}
+  .toolpick .dimtxt{margin:0 4px 0 0}
+  .toolpick .tk{display:inline-flex;gap:4px;align-items:center;cursor:pointer;
+    background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+    padding:2px 8px;font-size:11.5px;color:var(--dim);user-select:none}
+  .toolpick .tk:hover{border-color:var(--line2);color:var(--fg)}
+  .toolpick .tk input{margin:0;cursor:pointer;accent-color:var(--accent)}
+  .toolpick .tk:has(input:checked){border-color:var(--accent);color:var(--accent2);
+    background:var(--panel3)}
   .mh{font-size:10px;border-radius:10px;padding:1px 7px;font-weight:600}
   .mh.ok{color:var(--ok);background:#1b2a17} .mh.auth{color:var(--busy);background:#2a2413}
   .mh.fail{color:var(--bad);background:#2a1614} .mh.unk{color:var(--dim2);background:var(--panel3)}
@@ -1446,7 +1456,8 @@ function setTab(t){
 document.addEventListener('click', async function(e){
   // 구성 편집 컨트롤은 config-edit.js 가 먼저 처리한다
   const ce = e.target.closest('[data-editmode],[data-permdel],[data-dirdel],[data-addfrom],'
-    + '[data-plugtoggle],[data-mcpdel],[data-make],[data-docedit],[data-docdel],'
+    + '[data-plugtoggle],[data-mcpdel],[data-make],[data-maketeam],[data-teampeek],'
+    + '[data-docedit],[data-docdel],'
     + '[data-scope],[data-cfgkey],[data-envkey],#m-add,#bakgo,#mcpcheck');
   if (ce && CC.cfgEdit && CC.cfgEdit.handle(ce)) return;
 

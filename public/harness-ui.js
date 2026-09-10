@@ -292,6 +292,7 @@
             + '<div class="as">' + esc(a.source) + (a.model ? ' · ' + esc(a.model) : '') + '</div>'
             + (a.description ? '<div class="ad">' + esc(a.description) + '</div>' : '') + '</div>';
         }).join('') + '</div>'
+      + (CE ? CE.teamForm() : '')
       + (CE ? CE.makeForm('agent') : '')
       + '<div class="subh">스킬 ' + c.skills.length + '</div><div class="skl">'
       + c.skills.map(function (s) {

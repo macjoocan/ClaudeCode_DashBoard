@@ -426,15 +426,32 @@ function frontmatterBlock(fields) {
   return lines.join('\n');
 }
 
+// 에이전트를 어디에 둘지. 전역은 ~/.claude/agents, 프로젝트는 <cwd>/.claude/agents.
+// 프로젝트에 두면 그 폴더에서 연 세션에만 보이고 팀원과 커밋으로 공유된다.
+function agentsDirFor(scope, cwd) {
+  if (!scope || scope === 'user') return AGENTS_DIR;
+  // 에이전트는 settings.json 처럼 project/local 이 갈리지 않는다.
+  // 폴더가 .claude/agents 하나뿐이라 둘 다 같은 곳으로 보낸다.
+  if (scope === 'local') scope = 'project';
+  if (scope !== 'project') throw new Error('에이전트 스코프는 user / project 만 됩니다');
+  if (!cwd) throw new Error('프로젝트 스코프에는 폴더 경로가 필요합니다');
+  if (!fs.existsSync(cwd)) throw new Error('없는 폴더입니다: ' + cwd);
+  if (!knownProject(cwd)) throw new Error('런처가 모르는 폴더입니다 (세션 기록이 있는 프로젝트만 가능): ' + cwd);
+  const dir = path.join(path.resolve(cwd), '.claude', 'agents');
+  if (!dir.startsWith(path.resolve(cwd) + path.sep)) throw new Error('경로가 올바르지 않습니다');
+  return dir;
+}
+
 function createAgent(spec) {
   const name = String(spec.name || '').trim();
   if (!NAME_RE.test(name)) throw new Error('이름은 영문/숫자/-/_/. 로 1~64자여야 합니다');
   const desc = String(spec.description || '').trim();
   if (!desc) throw new Error('설명(description)은 필수입니다 - 이걸로 에이전트가 선택됩니다');
 
-  fs.mkdirSync(AGENTS_DIR, { recursive: true });
-  const file = path.join(AGENTS_DIR, name + '.md');
-  if (!file.startsWith(AGENTS_DIR)) throw new Error('경로가 올바르지 않습니다');
+  const dir = agentsDirFor(spec.scope, spec.cwd);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, name + '.md');
+  if (!file.startsWith(dir)) throw new Error('경로가 올바르지 않습니다');
   if (fs.existsSync(file) && !spec.overwrite) throw new Error('이미 있는 에이전트입니다: ' + name);
 
   const tools = Array.isArray(spec.tools) ? spec.tools.filter(Boolean) : null;
@@ -448,13 +465,34 @@ function createAgent(spec) {
   }) + '\n\n' + body + '\n';
 
   fs.writeFileSync(file, text, 'utf8');
-  return { ok: true, name, file, bytes: text.length };
+  return { ok: true, name, file, bytes: text.length, scope: spec.scope || 'user' };
 }
 
-function deleteAgent(name) {
+// 에이전트 여러 개를 한 번에. 하나가 실패해도 나머지는 계속 만든다 -
+// 이름이 겹치는 하나 때문에 팀 전체가 안 만들어지면 더 답답하다.
+function createAgentTeam(spec) {
+  const members = Array.isArray(spec.members) ? spec.members : [];
+  if (!members.length) throw new Error('만들 에이전트가 없습니다');
+  if (members.length > 12) throw new Error('한 번에 12개까지만 만듭니다');
+  const made = [], failed = [];
+  for (const m of members) {
+    try {
+      made.push(createAgent({
+        name: m.name, description: m.description, tools: m.tools, model: m.model,
+        body: m.body, overwrite: spec.overwrite, scope: spec.scope, cwd: spec.cwd,
+      }));
+    } catch (e) {
+      failed.push({ name: m && m.name, error: String((e && e.message) || e) });
+    }
+  }
+  return { ok: true, made, failed, scope: spec.scope || 'user' };
+}
+
+function deleteAgent(name, scope, cwd) {
   if (!NAME_RE.test(String(name))) throw new Error('이름이 올바르지 않습니다');
-  const file = path.join(AGENTS_DIR, name + '.md');
-  if (!file.startsWith(AGENTS_DIR)) throw new Error('경로가 올바르지 않습니다');
+  const dir = agentsDirFor(scope, cwd);
+  const file = path.join(dir, name + '.md');
+  if (!file.startsWith(dir)) throw new Error('경로가 올바르지 않습니다');
   const moved = trash(file, 'agent-' + name);
   return { ok: true, name, trashed: moved };
 }
@@ -625,7 +663,8 @@ module.exports = {
   settingsPath, effective, setEnvSwitch,
   setSetting, addPermission, removePermission, addDirectory, removeDirectory,
   listBackups, restoreBackup,
-  createAgent, deleteAgent, createSkill, deleteSkill, readDoc, writeDoc,
+  createAgent, createAgentTeam, deleteAgent, createSkill, deleteSkill, readDoc, writeDoc,
+  agentsDirFor,
   trashPath: trash,   // 세션 삭제도 같은 휴지통을 쓴다
   mcpList, mcpAdd, mcpRemove, setProjectMcp, setPluginEnabled,
 };

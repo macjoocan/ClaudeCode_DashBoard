@@ -1004,7 +1004,8 @@ const server = http.createServer(async (req, res) => {
         case 'dir-remove':   out = cfgWrite.removeDirectory(b.dir, b.scope, b.cwd); break;
         case 'restore':      out = cfgWrite.restoreBackup(b.name, b.scope, b.cwd); break;
         case 'agent-create': out = cfgWrite.createAgent(b); break;
-        case 'agent-delete': out = cfgWrite.deleteAgent(b.name); break;
+        case 'agent-team':   out = cfgWrite.createAgentTeam(b); break;
+        case 'agent-delete': out = cfgWrite.deleteAgent(b.name, b.scope, b.cwd); break;
         case 'skill-create': out = cfgWrite.createSkill(b); break;
         case 'skill-delete': out = cfgWrite.deleteSkill(b.name); break;
         case 'doc-write':    out = cfgWrite.writeDoc(b.kind, b.name, b.text); break;

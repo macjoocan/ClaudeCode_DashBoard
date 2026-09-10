@@ -324,6 +324,89 @@
       + '<div class="dimtxt">추가는 <code>claude mcp add</code> 를 그대로 호출합니다. 형식 검증은 CLI 가 합니다.</div>';
   }
 
+  // ------------------------------------------------------- 에이전트 팀 템플릿
+  //
+  // 서브에이전트는 하나씩 만들면 손이 많이 간다. 자주 쓰는 조합을 미리 묶어두고
+  // 한 번에 만든다. 만든 뒤 각자 '편집' 으로 내용을 채우는 것을 전제로 한 뼈대다.
+  //
+  // description 이 곧 선택 기준이다. Claude 가 이 문장을 보고 언제 부를지 정하므로
+  // "언제 쓰는지" 를 먼저 쓴다.
+
+  var TOOLBOX = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'PowerShell', 'WebFetch', 'WebSearch'];
+
+  var TEAMS = {
+    review: {
+      label: '코드 리뷰 팀',
+      note: '변경분을 세 관점으로 나눠 본다. 읽기 위주라 위험이 낮다.',
+      members: [
+        { name: 'reviewer', model: 'sonnet', tools: ['Read', 'Grep', 'Glob'],
+          description: '코드 변경분의 정확성과 회귀를 검토할 때. 로직 오류·엣지케이스·기존 동작 파손을 찾는다.' },
+        { name: 'security-reviewer', model: 'sonnet', tools: ['Read', 'Grep', 'Glob'],
+          description: '보안 관점 검토가 필요할 때. 입력 검증·경로 탈출·비밀값 노출·권한 확대를 본다.' },
+        { name: 'test-writer', model: 'sonnet', tools: ['Read', 'Grep', 'Glob', 'Write', 'Edit', 'Bash'],
+          description: '빠진 테스트를 채울 때. 기존 테스트 스타일을 따라 실패 케이스부터 만든다.' },
+      ],
+    },
+    debug: {
+      label: '디버깅 팀',
+      note: '재현과 수정을 나눈다. 재현 담당은 고치지 않는다.',
+      members: [
+        { name: 'repro', model: 'sonnet', tools: ['Read', 'Grep', 'Glob', 'Bash'],
+          description: '버그를 재현할 때. 최소 재현 절차를 찾아 정리하고 고치지는 않는다.' },
+        { name: 'fixer', model: 'opus', tools: ['Read', 'Grep', 'Glob', 'Edit', 'Bash'],
+          description: '재현된 버그를 고칠 때. 근본 원인을 찾아 최소 변경으로 고치고 검증까지 한다.' },
+      ],
+    },
+    research: {
+      label: '조사 · 문서 팀',
+      note: '큰 코드베이스를 훑을 때. 본 대화의 문맥을 아끼려고 나눈다.',
+      members: [
+        { name: 'explorer', model: 'sonnet', tools: ['Read', 'Grep', 'Glob'],
+          description: '코드베이스를 넓게 훑어야 할 때. 파일을 많이 읽고 결론만 요약해 돌려준다.' },
+        { name: 'doc-writer', model: 'sonnet', tools: ['Read', 'Grep', 'Glob', 'Write', 'Edit'],
+          description: '문서를 쓰거나 고칠 때. 코드를 먼저 읽고 실제 동작에 맞춰 쓴다.' },
+      ],
+    },
+  };
+
+  function teamForm() {
+    if (!EDIT) return '';
+    var opts = Object.keys(TEAMS).map(function (k) {
+      return '<option value="' + k + '">' + esc(TEAMS[k].label)
+        + ' (' + TEAMS[k].members.length + '개)</option>';
+    }).join('');
+    return '<div class="subh">에이전트 팀 한 번에 만들기</div>'
+      + '<div class="mform">'
+      +   '<select class="cfgsel" id="team-kind">' + opts + '</select>'
+      +   '<input class="hfilter" id="team-prefix" placeholder="이름 앞에 붙일 말 (선택, 예: hex-)">'
+      +   '<button class="btn primary xs" data-maketeam="1">팀 만들기</button>'
+      +   '<button class="btn ghost xs" data-teampeek="1">뭘 만드는지 보기</button>'
+      + '</div>'
+      + '<div class="dimtxt" id="team-peek">'
+      +   '고른 팀의 에이전트를 한 번에 만듭니다. 이름이 겹치면 그것만 건너뛰고 나머지는 만듭니다.'
+      + '</div>';
+  }
+
+  function teamPeek() {
+    var t = TEAMS[val('team-kind')];
+    if (!t) return;
+    var pre = (val('team-prefix') || '').trim();
+    var el = document.getElementById('team-peek');
+    if (!el) return;
+    el.innerHTML = '<b>' + esc(t.label) + '</b> &middot; ' + esc(t.note) + '<br>'
+      + t.members.map(function (m) {
+        return '&nbsp;&nbsp;<code>' + esc(pre + m.name) + '</code> &middot; '
+          + esc(m.model) + ' &middot; ' + esc(m.tools.join(', '))
+          + '<br>&nbsp;&nbsp;&nbsp;&nbsp;<span class="dimtxt">' + esc(m.description) + '</span>';
+      }).join('<br>')
+      + '<br>저장 위치: ' + esc(agentDirNote());
+  }
+
+  function agentDirNote() {
+    if (SCOPE === 'user') return '~/.claude/agents/';
+    return (SCWD || '(프로젝트를 고르세요)') + '\\.claude\\agents\\';
+  }
+
   // 에이전트 / 스킬 만들기 폼
   function makeForm(kind) {
     if (!EDIT) return '';
@@ -335,17 +418,28 @@
       + '<input class="hfilter wide" id="' + k + '-desc" placeholder="설명 - '
       +   (k === 'skill' ? '이 문장으로 스킬이 트리거됩니다' : '이 문장으로 에이전트가 선택됩니다') + '">'
       + (k === 'agent'
-          ? '<input class="hfilter" id="agent-tools" placeholder="도구 (예: Read,Grep,Bash / 비우면 전체)">'
-            + '<select class="cfgsel" id="agent-model">'
+          ? '<select class="cfgsel" id="agent-model">'
             +   '<option value="">모델: 기본</option><option value="opus">opus</option>'
             +   '<option value="sonnet">sonnet</option><option value="haiku">haiku</option>'
             + '</select>'
           : '')
       + '<button class="btn primary xs" data-make="' + k + '">만들기</button>'
       + '</div>'
-      + '<div class="dimtxt">' + (k === 'skill' ? '~/.claude/skills/&lt;이름&gt;/SKILL.md' : '~/.claude/agents/&lt;이름&gt;.md')
+      + (k === 'agent'
+          ? '<div class="toolpick">'
+            +   '<span class="dimtxt">도구 &middot; 하나도 안 고르면 전체 허용</span>'
+            +   TOOLBOX.map(function (t) {
+                  return '<label class="tk"><input type="checkbox" class="agent-tool" value="'
+                    + esc(t) + '"> ' + esc(t) + '</label>';
+                }).join('')
+            + '</div>'
+          : '')
+      + '<div class="dimtxt">' + (k === 'skill' ? '~/.claude/skills/&lt;이름&gt;/SKILL.md'
+                                                : esc(agentDirNote()) + '&lt;이름&gt;.md')
       +   ' 를 프론트매터와 뼈대까지 만들어 둡니다. 만든 뒤 <b>편집</b> 으로 내용을 채우세요.'
-      +   ' <b>다음 세션부터 인식됩니다.</b></div>';
+      +   ' <b>다음 세션부터 인식됩니다.</b>'
+      +   (k === 'agent' ? ' 저장 위치는 위의 <b>설정 대상</b> 을 따릅니다.' : '')
+      + '</div>';
   }
 
   function docActions(kind, name, source) {
@@ -481,12 +575,42 @@
       var kind = d.make;
       var body = { op: kind + '-create', name: val(kind + '-name'), description: val(kind + '-desc') };
       if (kind === 'agent') {
-        var tl = (val('agent-tools') || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+        var tl = [].slice.call(document.querySelectorAll('.agent-tool:checked'))
+          .map(function (c) { return c.value; });
         if (tl.length) body.tools = tl;
         if (val('agent-model')) body.model = val('agent-model');
       }
+      // 에이전트는 스코프 바를 따른다. 스킬은 아직 전역만 지원한다.
+      if (kind === 'agent') withScope(body);
       act(post(body), (kind === 'skill' ? '스킬' : '에이전트') + ' 만들었습니다 · 다음 세션부터 인식됩니다',
           function (r) { openEditor(kind, r.name); });
+      return true;
+    }
+
+    if (d.teampeek) { teamPeek(); return true; }
+
+    if (d.maketeam) {
+      var t = TEAMS[val('team-kind')];
+      if (!t) { CC.toast('팀을 고르세요', true); return true; }
+      var pre = (val('team-prefix') || '').trim();
+      if (SCOPE !== 'user' && !SCWD) {
+        CC.toast('프로젝트 스코프입니다 - 위에서 대상 프로젝트를 먼저 고르세요', true);
+        return true;
+      }
+      var members = t.members.map(function (m) {
+        return { name: pre + m.name, description: m.description, tools: m.tools, model: m.model };
+      });
+      if (!confirm(t.label + ' 을 만듭니다 (' + members.length + '개)\n\n'
+          + members.map(function (m) { return '  ' + m.name; }).join('\n')
+          + '\n\n저장 위치: ' + agentDirNote() + '\n\n만들까요?')) return true;
+
+      act(post(withScope({ op: 'agent-team', members: members })), null, function (r) {
+        var msg = r.made.length + '개 만들었습니다';
+        if (r.failed && r.failed.length) {
+          msg += ' · ' + r.failed.length + '개 건너뜀 (' + r.failed[0].error + ')';
+        }
+        CC.toast(msg + ' · 다음 세션부터 인식됩니다', !r.made.length);
+      });
       return true;
     }
 
@@ -562,7 +686,8 @@
 
   function act(p, okMsg, then) {
     return p.then(function (r) {
-      CC.toast(okMsg + (r.backup ? ' · 백업 ' + r.backup : ''));
+      // okMsg 가 없으면 then 이 알아서 알린다 (결과에 따라 문구가 갈리는 경우)
+      if (okMsg) CC.toast(okMsg + (r.backup ? ' · 백업 ' + r.backup : ''));
       if (then) then(r);
       refresh();
       return r;
@@ -579,6 +704,7 @@
     settingSelect: settingSelect, ruleActions: ruleActions, addForm: addForm,
     pluginToggle: pluginToggle, mcpHealth: mcpHealth, mcpActions: mcpActions,
     mcpAddForm: mcpAddForm, mcpCheckBar: mcpCheckBar, makeForm: makeForm, docActions: docActions,
+    teamForm: teamForm,
     scopeBar: scopeBar, settingsPanel: settingsPanel, scopeOf: scopeOf,
     openEditor: openEditor,
     isEdit: isEdit,
