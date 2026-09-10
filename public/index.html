@@ -206,6 +206,26 @@
   .card.sc .lastq:hover{color:var(--fg)}
 
   /* ---------------- 내장 터미널 ---------------- */
+  /* ---------------- 문서 탭 (SCRIBE) ---------------- */
+  #mdwrap{display:flex;flex-direction:column;height:calc(100vh - var(--hh))}
+  .mdbar{display:flex;gap:4px;align-items:center;flex-wrap:wrap;flex:none;
+    padding:7px 12px;background:var(--panel);border-bottom:1px solid var(--line);font-size:11.5px}
+  .mdbar .lb{color:var(--dim2);margin:0 3px 0 8px}
+  .mdbar .lb:first-child{margin-left:0}
+  .mdbar button{background:var(--panel2);border:1px solid var(--line);color:var(--dim);
+    border-radius:6px;padding:3px 9px;cursor:pointer;font-size:11.5px;font-family:inherit}
+  .mdbar button:hover{border-color:var(--line2);color:var(--fg)}
+  .mdbar button.pick{background:var(--panel3);border-color:var(--line2);color:var(--fg)}
+  .mdbar button.pick:hover{border-color:var(--accent);color:var(--accent2)}
+  .mdbar select{background:var(--panel2);border:1px solid var(--line);color:var(--fg);
+    border-radius:6px;padding:3px 7px;font-size:11.5px;font-family:inherit;max-width:280px}
+  .mdbar .vault{color:var(--dim2);margin-left:auto;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:44%}
+  .mdbar .vault b{color:var(--dim)}
+  #mdframe{flex:1;width:100%;border:none;background:var(--bg);min-height:0}
+  .mdnone{flex:1;display:flex;flex-direction:column;gap:12px;align-items:center;
+    justify-content:center;color:var(--dim);text-align:center;line-height:1.9;padding:40px 20px}
+
   #termwrap{display:flex;flex-direction:column;height:calc(100vh - var(--hh))}
   .termbar{display:flex;gap:4px;align-items:center;padding:7px 12px;background:var(--panel);
     border-bottom:1px solid var(--line);overflow-x:auto;flex:none}
@@ -660,6 +680,7 @@
     <button class="tab" data-tab="flow">실황<span class="n" id="n-flow" hidden></span></button>
     <button class="tab" data-tab="graph">연결<span class="n" id="n-graph" hidden></span></button>
     <button class="tab" data-tab="cfg">구성<span class="n" id="n-cfg">0</span></button>
+    <button class="tab" data-tab="md">문서</button>
   </div>
   <div class="meta" id="env"></div>
 </header>
@@ -679,6 +700,10 @@
   <div id="tlwrapouter" hidden></div>
   <div id="graphwrap" hidden></div>
   <div id="cfgwrap" hidden></div>
+  <div id="mdwrap" hidden>
+    <div class="mdbar" id="mdbar"></div>
+    <iframe id="mdframe" title="SCRIBE 마크다운 편집기"></iframe>
+  </div>
 </main>
 
 <div id="scrim"></div>
@@ -1271,18 +1296,108 @@ function sessionCard(s, emb){
     + '</div></section>';
 }
 
+/* ------------------------------------------------ 문서 탭 (SCRIBE 편집기) */
+//
+// SCRIBE 빌드물을 iframe 으로 띄우고, 파일 접근은 서버의 /api/md 가 받는다.
+// 편집기 쪽 window.scribe 는 public/scribe-bridge.js 가 넣어준다.
+
+let MDSTATE = null;      // { ok, scribeDir, error, vault }
+let mdLoaded = false;
+
+async function mdCall(op, body){
+  const j = await post('/api/md', Object.assign({ op }, body || {}));
+  return j.result;
+}
+
+async function mdEnter(){
+  if (!MDSTATE){
+    try { MDSTATE = await mdCall('status'); }
+    catch (e) { MDSTATE = { ok:false, error: e.message }; }
+  }
+  renderMdBar();
+  // 편집기는 한 번만 띄운다. 탭을 오갈 때마다 새로 띄우면 편집 중인 내용이 날아간다.
+  if (MDSTATE.ok && !mdLoaded){
+    $('#mdframe').src = '/scribe/';
+    mdLoaded = true;
+  }
+  $('#mdframe').hidden = !MDSTATE.ok;
+}
+
+function renderMdBar(){
+  const bar = $('#mdbar');
+  if (!MDSTATE || !MDSTATE.ok){
+    bar.innerHTML = '<span class="lb">SCRIBE 를 찾지 못했습니다</span>'
+      + '<span class="vault">' + esc((MDSTATE && MDSTATE.error) || '') + '</span>';
+    $('#mdframe').hidden = true;
+    if (!$('#mdnone')){
+      const d = document.createElement('div');
+      d.className = 'mdnone'; d.id = 'mdnone';
+      d.innerHTML = '<div>마크다운 편집기(SCRIBE)를 찾지 못했습니다.</div>'
+        + '<div>SCRIBE 를 <code>&lt;런처 상위&gt;\\Scribe\\editor</code> 에 두거나,<br>'
+        + '환경변수 <code>CC_SCRIBE_DIR</code> 로 위치를 알려주세요.<br>'
+        + '<code>editor\\dist</code> 가 있어야 합니다 (<code>npm run build</code>).</div>';
+      $('#mdwrap').appendChild(d);
+    }
+    return;
+  }
+  const none = $('#mdnone'); if (none) none.remove();
+
+  // 세션이 있는 프로젝트를 바로 고를 수 있게 (터미널에서 만든 md 를 여는 게 목적이다)
+  const opts = DATA.map(p => '<option value="'+esc(p.cwd)+'"'
+      + (MDSTATE.vault && p.cwd.toLowerCase() === String(MDSTATE.vault).toLowerCase() ? ' selected' : '')
+      + '>'+esc(p.name)+'</option>').join('');
+
+  bar.innerHTML =
+      '<span class="lb">보관 폴더</span>'
+    + '<select id="md-proj"><option value="">프로젝트에서 고르기…</option>' + opts + '</select>'
+    + '<button class="pick" data-mdpick="1" title="윈도 폴더 창에서 아무 폴더나 고른다">📁 폴더 고르기</button>'
+    + '<button data-mdreload="1" title="편집기를 다시 불러온다">↻</button>'
+    + '<span class="vault">' + (MDSTATE.vault
+        ? '<b>' + esc(MDSTATE.vault) + '</b>'
+        : '폴더를 고르면 그 안의 .md 를 편집합니다') + '</span>';
+}
+
+// 보관 폴더를 바꾸고 편집기에 알린다
+async function mdSetVault(dir){
+  const r = await mdCall('set-vault', { dir });
+  MDSTATE.vault = r.listing ? r.listing.root : dir;
+  renderMdBar();
+  // 편집기가 이미 떠 있으면 새로 읽게 한다. 브리지의 currentVault 를 다시 타야 한다.
+  if (mdLoaded) $('#mdframe').contentWindow.location.reload();
+  else { $('#mdframe').src = '/scribe/'; mdLoaded = true; }
+  return r.listing;
+}
+
+// 편집기 안에서 '보관 폴더 열기' 를 누르면 여기로 온다.
+// iframe 안에서 네이티브 폴더 창을 띄우면 뒤에 가려 보이지 않을 수 있어 부모가 띄운다.
+window.addEventListener('message', async function(e){
+  if (e.origin !== location.origin || !e.data) return;
+  if (e.data.type !== 'scribe:pick-vault') return;
+  let listing = null;
+  try{
+    const j = await post('/api/pickfolder', { start: MDSTATE && MDSTATE.vault });
+    if (!j.cancelled && j.path) listing = await mdSetVault(j.path);
+  }catch(err){ toast('폴더 열기 실패: ' + err.message, true); }
+  const fr = $('#mdframe');
+  if (fr && fr.contentWindow)
+    fr.contentWindow.postMessage({ type:'scribe:vault-picked', listing }, location.origin);
+});
+
 function render(){
   const isTerm  = TAB === 'term';
   const isGraph = TAB === 'graph';
   const isCfg   = TAB === 'cfg';
   const isTl    = TAB === 'flow';
+  const isMd    = TAB === 'md';
   $('#termwrap').hidden    = !isTerm;
   $('#graphwrap').hidden   = !isGraph;
   $('#cfgwrap').hidden     = !isCfg;
   $('#tlwrapouter').hidden = !isTl;
-  $('#list').hidden = isTerm || isGraph || isCfg || isTl;
-  $('#listbar').hidden = isTerm || isGraph || isCfg || isTl;
-  $('#main').classList.toggle('termmode', isTerm);
+  $('#mdwrap').hidden      = !isMd;
+  $('#list').hidden = isTerm || isGraph || isCfg || isTl || isMd;
+  $('#listbar').hidden = isTerm || isGraph || isCfg || isTl || isMd;
+  $('#main').classList.toggle('termmode', isTerm || isMd);
+  if (isMd){ mdEnter(); return; }
   if (isTl){ CC.timeline.load(true); return; }
   if (isTerm){ CC.term.refit(); return; }
   // 그래프·구성은 폴링(4초)마다 다시 그리면 펼쳐둔 섹션이 닫히고 스크롤이 튄다.
@@ -1574,6 +1689,7 @@ document.addEventListener('click', async function(e){
     + '[data-reloadterm],[data-restartterm],[data-resetsize],[data-movepane],'
     + '[data-fold],[data-listview],[data-sort],[data-pick],'
     + '[data-hide],[data-hideproj],[data-delsess],[data-showhidden],[data-unhideall],'
+    + '[data-mdpick],[data-mdreload],'
     + '[data-openfile],[data-hookinstall],[data-hookuninstall],#t-new,.m.thinking');
   if (!t) return;
 
@@ -1608,6 +1724,27 @@ document.addEventListener('click', async function(e){
   if (t.dataset.openfile){
     try{ await post('/api/open',{cwd:t.dataset.openfile, target:'vscode'}); toast('VS Code 로 열었습니다'); }
     catch(err){ toast(err.message, true); }
+    return;
+  }
+
+  // ---- 문서 탭 ----
+  if (t.dataset.mdpick){
+    t.disabled = true;
+    const was = t.textContent;
+    t.textContent = '폴더 고르는 중…';
+    try{
+      const j = await post('/api/pickfolder', { start: (MDSTATE && MDSTATE.vault) || '' });
+      if (!j.cancelled && j.path){
+        await mdSetVault(j.path);
+        toast('보관 폴더: ' + j.path.split(/[\\/]/).filter(Boolean).pop());
+      }
+    }catch(err){ toast('폴더 열기 실패: ' + err.message, true); }
+    t.disabled = false; t.textContent = was;
+    return;
+  }
+  if (t.dataset.mdreload){
+    if (mdLoaded) $('#mdframe').contentWindow.location.reload();
+    toast('편집기를 다시 불러왔습니다');
     return;
   }
 
@@ -1852,7 +1989,15 @@ document.addEventListener('keydown', function(e){
 });
 // ↻ : 보고 있는 탭에 맞는 것을 다시 읽는다
 // 구성 편집의 select 변경
-document.addEventListener('change', function(e){
+document.addEventListener('change', async function(e){
+  // 문서 탭의 프로젝트 고르기
+  if (e.target.id === 'md-proj'){
+    const dir = e.target.value;
+    if (!dir) return;
+    try{ await mdSetVault(dir); toast('보관 폴더: ' + dir); }
+    catch(err){ toast('폴더를 열지 못했습니다: ' + err.message, true); }
+    return;
+  }
   if (CC.cfgEdit) CC.cfgEdit.handleChange(e.target);
 });
 // 구성이 바뀌면 다시 읽어 화면을 맞춘다

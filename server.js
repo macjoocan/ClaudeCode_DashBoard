@@ -29,6 +29,7 @@ const cfgWrite = require('./config-write');
 const codex = require('./codex.js');
 const usage = require('./usage.js');   // 세션 하나의 사용량 (카드·대화 헤더)
 const tokens = require('./tokens');    // 전체 합계 (헤더 바: 오늘 / 최근 5시간)
+const scribe = require('./scribe');    // 마크다운 편집기 (SCRIBE 빌드물 + 파일 브리지)
 
 const HOOK_URL = `http://${'127.0.0.1'}:${Number(process.env.CC_LAUNCHER_PORT || 7788)}/api/hook`;
 
@@ -624,7 +625,13 @@ function openVSCode(cwd) {
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
                '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml',
-               '.json': 'application/json; charset=utf-8', '.woff2': 'font/woff2' };
+               '.json': 'application/json; charset=utf-8', '.woff2': 'font/woff2',
+               // SCRIBE 빌드물이 KaTeX 폰트를 woff/ttf 로도 싣는다
+               '.woff': 'font/woff', '.ttf': 'font/ttf', '.map': 'application/json; charset=utf-8',
+               // 보관 폴더의 이미지를 미리보기에 내려줄 때
+               '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+               '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif',
+               '.bmp': 'image/bmp' };
 
 function json(res, code, body) {
   res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -804,6 +811,59 @@ const server = http.createServer(async (req, res) => {
       if (!raw.length) throw new Error('빈 파일입니다');
       const saved = savePaste(raw, url.searchParams.get('name'));
       return json(res, 200, { ok: true, path: saved.path, bytes: saved.bytes });
+    }
+
+    // ------- 마크다운 편집기 (SCRIBE) -------
+
+    // 브리지 동작 하나. 프런트의 window.scribe 가 여기로 보낸다.
+    //
+    // readBody 는 1MB 에서 끊는다. 문서 저장은 SCRIBE 상한인 8MB 까지 올 수 있어
+    // 그대로 쓰면 큰 문서가 조용히 잘린다. 넉넉히 받고 여기서 파싱한다.
+    if (url.pathname === '/api/md' && req.method === 'POST') {
+      const raw = await readRawBody(req, 16 * 1024 * 1024);
+      let b;
+      try { b = raw.length ? JSON.parse(raw.toString('utf8')) : {}; }
+      catch { throw new Error('요청 본문을 읽지 못했습니다'); }
+      return json(res, 200, { ok: true, result: scribe.run(String(b.op || ''), b) });
+    }
+
+    // 붙여넣은 이미지. JSON 이 아니라 원본 바이트로 받는다.
+    if (url.pathname === '/api/md/image' && req.method === 'POST') {
+      const raw = await readRawBody(req, PASTE_MAX);
+      const saved = scribe.saveImage(String(url.searchParams.get('p') || ''), raw);
+      return json(res, 200, { ok: true, result: saved });
+    }
+
+    // 보관 폴더 안의 이미지를 미리보기에 내려준다
+    if (url.pathname === '/api/md/asset') {
+      const file = scribe.assetPath(String(url.searchParams.get('p') || ''));
+      res.writeHead(200, {
+        'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
+        'cache-control': 'no-store',
+      });
+      return fs.createReadStream(file).pipe(res);
+    }
+
+    // SCRIBE 빌드물. index.html 에만 브리지 스크립트를 끼워 넣는다.
+    if (url.pathname === '/scribe' || url.pathname.startsWith('/scribe/')) {
+      if (!scribe.available()) {
+        res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' });
+        return res.end(scribe.status().error || 'SCRIBE 를 쓸 수 없습니다');
+      }
+      const rel = url.pathname.replace(/^\/scribe\/?/, '') || 'index.html';
+      if (rel === 'index.html') {
+        const html = scribe.indexHtml();
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        return res.end(html);
+      }
+      const full = scribe.distFile(rel);
+      if (!full) { res.writeHead(404); return res.end('not found'); }
+      res.writeHead(200, {
+        'content-type': MIME[path.extname(full).toLowerCase()] || 'application/octet-stream',
+        // 해시가 붙은 파일이라 오래 캐시해도 된다 (7.9MB 를 매번 받으면 느리다)
+        'cache-control': 'public, max-age=86400',
+      });
+      return fs.createReadStream(full).pipe(res);
     }
 
     // 웹페이지에서 끌어온 이미지는 파일이 아니라 URL 로 온다. 받아서 저장한다.
