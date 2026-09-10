@@ -20,8 +20,11 @@ const https = require('https');
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const CRED_FILE = path.join(os.homedir(), '.claude', '.credentials.json');
 
-const TTL_OK = 60 * 1000;        // 성공하면 1분 캐시 (비공식 endpoint 를 두드리지 않는다)
-const TTL_FAIL = 5 * 60 * 1000;  // 실패하면 5분 쉬었다 다시
+// 이 endpoint 는 자주 부르면 429 를 준다 (실측으로 걸려봤다).
+// 한도 수치는 분 단위로 급변하지 않으니 넉넉히 쉰다.
+const TTL_OK = 3 * 60 * 1000;     // 성공하면 3분
+const TTL_FAIL = 5 * 60 * 1000;   // 그냥 실패는 5분
+const TTL_429 = 20 * 60 * 1000;   // 한도 초과는 훨씬 길게 - 더 두드리면 더 막힌다
 const TIMEOUT = 15000;
 
 let cache = { at: 0, ok: false, data: null };
@@ -143,7 +146,7 @@ function parseBody(body, cred) {
 
 async function load() {
   const cred = readCredential();
-  if (!cred) return { ok: false, reason: '자격증명을 찾지 못했습니다' };
+  if (!cred) return { ok: false, reason: '자격증명을 찾지 못했습니다', noCredential: true };
 
   // 만료 60초 전이면 만료로 본다. Claude Code 가 곧 갱신하므로 다음 번에 다시 된다.
   if (cred.expiresAt && cred.expiresAt <= Math.floor(Date.now() / 1000) + 60) {
@@ -155,7 +158,8 @@ async function load() {
   catch (e) { return { ok: false, reason: String(e.message) }; }
 
   if (res.status !== 200) {
-    return { ok: false, reason: 'HTTP ' + res.status };
+    // 429 는 따로 표시해서 더 오래 쉬게 한다
+    return { ok: false, reason: 'HTTP ' + res.status, rateLimited: res.status === 429 };
   }
   try {
     return { ok: true, data: parseBody(res.body, cred) };
@@ -164,9 +168,14 @@ async function load() {
   }
 }
 
-// 캐시를 앞에 둔다. 화면이 20초마다 물어봐도 endpoint 는 1분에 한 번만 두드린다.
-function limits() {
-  const ttl = cache.ok ? TTL_OK : TTL_FAIL;
+// 캐시를 앞에 둔다. 화면이 얼마나 자주 물어도 endpoint 는 위 TTL 만큼만 두드린다.
+const FORCE_MIN = 30 * 1000;   // 손으로 눌러도 이만큼은 쉰다
+
+function limits(opts) {
+  const force = !!(opts && opts.force);
+  const ttl = force ? FORCE_MIN
+    : (cache.ok ? TTL_OK
+      : (cache.data && cache.data.rateLimited ? TTL_429 : TTL_FAIL));
   if (cache.data && Date.now() - cache.at < ttl) return Promise.resolve(cache.data);
   if (inflight) return inflight;
 

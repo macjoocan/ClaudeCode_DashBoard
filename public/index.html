@@ -83,6 +83,9 @@
   .limbar .lg.warn .lv{color:var(--busy)} .limbar .lg.warn .lbar i{background:var(--busy)}
   .limbar .lg.hot .lv{color:var(--bad)}   .limbar .lg.hot .lbar i{background:var(--bad)}
   .limbar .lg.plan{cursor:default}
+  .limbar .lg.off{cursor:pointer;opacity:.7}
+  .limbar .lg.off:hover{opacity:1}
+  .limbar .lg.off .lv{color:var(--dim2);font-weight:600}
   .limbar .lg.plan .lv{color:var(--dim);font-weight:600;font-size:11px}
 
   /* ---------------- 버튼 ---------------- */
@@ -898,9 +901,10 @@ async function loadTokens(){
 
 let LIM = null;
 
-async function loadLimits(){
-  try { LIM = await (await fetch('/api/limits',{cache:'no-store'})).json(); }
-  catch { return; }
+async function loadLimits(force){
+  try {
+    LIM = await (await fetch('/api/limits' + (force ? '?force=1' : ''), {cache:'no-store'})).json();
+  } catch { return; }
   renderLimits();
 }
 
@@ -942,7 +946,32 @@ function sevClass(p){ return p >= 85 ? 'hot' : (p >= 60 ? 'warn' : ''); }
 
 function renderLimits(){
   const el = $('#lim');
-  if (!LIM || !LIM.ok || !LIM.data || !LIM.data.gauges.length){ el.hidden = true; return; }
+
+  // 자격증명이 아예 없으면 이 PC 에선 쓸 수 없는 기능이라 통째로 숨긴다.
+  if (!LIM || (LIM.noCredential)){ el.hidden = true; return; }
+
+  // 그 밖의 실패는 **숨기지 않고 이유를 보여준다.** 그냥 사라지면
+  // 어디로 갔는지 알 수가 없다 (실제로 그런 일이 있었다).
+  if (!LIM.ok || !LIM.data || !LIM.data.gauges.length){
+    const rl = LIM.reason === 'HTTP 429';
+    el.hidden = false;
+    el.innerHTML = '<div class="lg off" data-limretry="1">'
+      + '<span class="ll">사용 한도</span>'
+      + '<span class="lv">—</span>'
+      + '<span class="lw">' + (rl ? '잠시 후 다시' : '눌러서 다시') + '</span>'
+      + '</div>';
+    el.title = [
+      '사용 한도를 가져오지 못했습니다',
+      '',
+      '사유: ' + (LIM.reason || '알 수 없음'),
+      rl ? '너무 자주 물어봐서 서버가 잠시 막았습니다. 20분 뒤 저절로 다시 시도합니다.' : '',
+      '',
+      '눌러서 바로 다시 시도할 수 있습니다.',
+      '비공식 경로라 안 될 때가 있습니다 - 나머지 표시는 영향받지 않습니다.',
+    ].filter(Boolean).join('\n');
+    return;
+  }
+
   const d = LIM.data;
   el.hidden = false;
 
@@ -1803,6 +1832,7 @@ document.addEventListener('click', async function(e){
     + '[data-fold],[data-listview],[data-sort],[data-pick],'
     + '[data-hide],[data-hideproj],[data-delsess],[data-showhidden],[data-unhideall],'
     + '[data-mdpick],[data-mdreload],'
+    + '[data-limretry],'
     + '[data-openfile],[data-hookinstall],[data-hookuninstall],#t-new,.m.thinking');
   if (!t) return;
 
@@ -1837,6 +1867,14 @@ document.addEventListener('click', async function(e){
   if (t.dataset.openfile){
     try{ await post('/api/open',{cwd:t.dataset.openfile, target:'vscode'}); toast('VS Code 로 열었습니다'); }
     catch(err){ toast(err.message, true); }
+    return;
+  }
+
+  // ---- 사용 한도 다시 시도 ----
+  if (t.dataset.limretry){
+    toast('사용 한도를 다시 물어봅니다…');
+    await loadLimits(true);
+    if (LIM && !LIM.ok) toast('아직 안 됩니다: ' + (LIM.reason || ''), true);
     return;
   }
 
@@ -2182,8 +2220,8 @@ setInterval(load, 60000);
 setInterval(pollLive, 4000);
 setInterval(loadTerms, 5000);
 setInterval(loadTokens, 20000);   // 변경된 파일만 다시 읽으므로 가볍다
-// 한도는 서버가 1분 캐시하므로 더 자주 물어도 소용없다
-setInterval(loadLimits, 60000);
+// 한도는 서버가 3분 캐시한다. 더 자주 물어도 캐시만 돌려받는다.
+setInterval(loadLimits, 180000);
 </script>
 </body>
 </html>

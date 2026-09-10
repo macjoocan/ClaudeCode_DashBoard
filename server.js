@@ -1083,7 +1083,7 @@ const server = http.createServer(async (req, res) => {
     // 사용 한도. 비공식 endpoint 라 실패해도 200 으로 ok:false 만 돌려준다 -
     // 헤더 바가 오류로 깨지면 안 된다.
     if (url.pathname === '/api/limits') {
-      return json(res, 200, await limits.limits());
+      return json(res, 200, await limits.limits({ force: url.searchParams.get('force') === '1' }));
     }
 
     if (url.pathname === '/api/tokens') {
