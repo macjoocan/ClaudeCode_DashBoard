@@ -342,9 +342,28 @@
 
   var LAY = { colP: 20, colS: 300, colA: 700, rowH: 30, top: 56, boxP: 250, boxS: 360, boxA: 190 };
 
+  // 실행 중인 세션만 볼지. 세션이 쌓이면 노드가 수십 개라 신호가 묻힌다.
+  var LIVEONLY = localStorage.getItem('ccl.gliveonly') === '1';
+
   function renderGraph(host) {
     if (!GRAPH) { host.innerHTML = '<div class="empty">불러오는 중&#8230;</div>'; return; }
     var g = GRAPH;
+
+    // 걸러낼 때는 노드와 엣지를 같이 걸러야 한다. 엣지만 남으면 허공을 가리킨다.
+    if (LIVEONLY) {
+      var keep = {};
+      g.nodes.forEach(function (n) {
+        if (n.kind !== 'session' || n.live) keep[n.id] = 1;
+      });
+      // nodes/edges 만 담은 새 객체로 바꾸면 mcpGlobal 같은 다른 필드가 날아간다.
+      // 원본을 얕게 복사하고 두 배열만 갈아끼운다.
+      var filtered = {};
+      Object.keys(g).forEach(function (k) { filtered[k] = g[k]; });
+      filtered.nodes = g.nodes.filter(function (n) { return keep[n.id]; });
+      filtered.edges = g.edges.filter(function (e) { return keep[e.from] && keep[e.to]; });
+      g = filtered;
+    }
+
     var projects = g.nodes.filter(function (n) { return n.kind === 'project'; });
     var sessions = g.nodes.filter(function (n) { return n.kind === 'session'; });
     var agents = g.nodes.filter(function (n) { return n.kind === 'subagent'; });
@@ -503,6 +522,14 @@
       + '<div class="glegend">'
       +   '<span><i class="dbusy"></i>작업 중</span><span><i class="dlive"></i>대기 중</span>'
       +   '<span><i class="doff"></i>실행 중 아님</span>'
+      +   '<button class="gbtn' + (LIVEONLY ? ' on' : '') + '" data-gliveonly="1"'
+      +     ' title="실행 중인 세션만 남긴다. 세션이 쌓이면 노드가 수십 개라 신호가 묻힌다">'
+      +     '실행 중만</button>'
+      +   '<button class="gbtn" data-ggraph="reload"'
+      +     ' title="그래프를 다시 만든다 (새로 시작한 세션 반영)">↻</button>'
+      +   '<span class="gcount">세션 ' + sessions.length
+      +     (LIVEONLY ? ' (실행 중만)' : ' / 전체 ' + GRAPH.nodes.filter(function (n) {
+        return n.kind === 'session'; }).length) + '</span>'
       +   '<span class="gl2">세션을 클릭하면 대화가 열리고, 대시보드에서 도는 세션은 그 터미널로 이동합니다</span>'
       + '</div>'
       + '<div class="gsplit">'
@@ -699,16 +726,45 @@
     paintFlow();
     if (ev) signal(ev);
 
-    // 그래프에 없는 새 에이전트 종류가 등장하면 그래프를 다시 만든다 (노드가 생겨야 신호를 쏠 수 있다)
-    if (ev && ev.agentType && GRAPH && GRAPH_HOST && TABIS() === 'graph') {
-      var known = GRAPH.nodes.some(function (n) { return n.kind === 'subagent' && n.label === ev.agentType; });
-      if (!known && Date.now() - lastGraphRefresh > 15000) {
+    // 그래프에 없는 것이 등장하면 다시 만든다. 노드가 있어야 신호를 쏠 수 있다.
+    //
+    // 세션 쪽을 빠뜨리고 있었다. 그래프는 연결 탭을 처음 열 때 한 번만 만들어지는데
+    // (render() 가 #graphwrap 이 비었을 때만 loadGraph 를 부른다), 그 뒤에 시작한
+    // 세션은 EDGES 에 없어 signal() 이 조용히 물러난다. 실측에서 활동 중인 세션
+    // 7개 중 3개가 그래프에 없었다 - 하네스가 도는데 화면은 가만히 있는 이유였다.
+    if (ev && GRAPH && GRAPH_HOST && TABIS() === 'graph') {
+      var want = null;
+      if (ev.sessionId && !EDGES[ev.sessionId]) want = 's:' + ev.sessionId;
+      else if (ev.agentType && !GRAPH.nodes.some(function (n) {
+        return n.kind === 'subagent' && n.label === ev.agentType;
+      })) want = 'a:' + ev.agentType;
+
+      // 한 번 새로 만들어 봤는데도 여전히 없으면 다시 시도하지 않는다.
+      // 그래프에 절대 안 올라오는 세션(사이드체인 등)이 8초마다 재구성을 유발한다.
+      if (want && !triedRefresh[want] && Date.now() - lastGraphRefresh > 8000) {
+        triedRefresh[want] = 1;
         lastGraphRefresh = Date.now();
         loadGraph(GRAPH_HOST);
       }
     }
   }
   var lastGraphRefresh = 0;
+  // "이걸 찾으려고 그래프를 다시 만들어 봤다" 기록. 키는 's:'+세션 또는 'a:'+에이전트.
+  var triedRefresh = {};
+
+  // 그래프를 새로 만든 뒤, 이제 실제로 생긴 것만 기록에서 지운다.
+  // 통째로 비우면 끝내 안 생기는 세션(사이드체인 등)이 계속 재구성을 유발한다.
+  function pruneTried() {
+    if (!GRAPH) return;
+    var have = {};
+    GRAPH.nodes.forEach(function (n) {
+      if (n.kind === 'session' && n.sessionId) have['s:' + n.sessionId] = 1;
+      if (n.kind === 'subagent') have['a:' + n.label] = 1;
+    });
+    Object.keys(triedRefresh).forEach(function (k) {
+      if (have[k]) delete triedRefresh[k];
+    });
+  }
 
   function cut(s, n) {
     s = String(s == null ? '' : s);
@@ -738,14 +794,36 @@
     host.innerHTML = '<div class="empty">그래프를 만드는 중&#8230; (세션 기록을 훑습니다)</div>';
     return fetch('/api/graph', { cache: 'no-store' })
       .then(function (r) { return r.json(); })
-      .then(function (j) { if (j.error) throw new Error(j.error); GRAPH = j; renderGraph(host); return j; })
+      .then(function (j) {
+        if (j.error) throw new Error(j.error);
+        GRAPH = j;
+        pruneTried();
+        renderGraph(host);
+        return j;
+      })
       .catch(function (e) { host.innerHTML = '<div class="empty">그래프를 불러오지 못했습니다: ' + esc(e.message) + '</div>'; });
+  }
+
+  // 연결 탭 도구 버튼. index.html 의 클릭 위임에서 부른다.
+  function handleGraphBtn(el) {
+    if (el.dataset.gliveonly !== undefined) {
+      LIVEONLY = !LIVEONLY;
+      localStorage.setItem('ccl.gliveonly', LIVEONLY ? '1' : '0');
+      if (GRAPH_HOST) renderGraph(GRAPH_HOST);
+      return true;
+    }
+    if (el.dataset.ggraph === 'reload') {
+      if (GRAPH_HOST) loadGraph(GRAPH_HOST);
+      return true;
+    }
+    return false;
   }
 
   CC.harness = {
     loadConfig: loadConfig, loadGraph: loadGraph,
     renderConfig: renderConfig, renderGraph: renderGraph,
     onLiveEvent: onLiveEvent, paintLive: paintLive, paintFlow: paintFlow, signal: signal,
+    handleGraphBtn: handleGraphBtn,
     get config() { return CFG; }, get graph() { return GRAPH; }
   };
 })();

@@ -525,6 +525,11 @@
     font-size:11.5px;margin-bottom:8px}
   .glegend i{display:inline-block;width:8px;height:8px;border-radius:4px;margin-right:6px;vertical-align:0}
   .glegend .gl2{color:var(--dim2);opacity:.8}
+  .glegend .gbtn{background:var(--panel2);border:1px solid var(--line);color:var(--dim);
+    border-radius:6px;padding:3px 9px;cursor:pointer;font-size:11.5px;font-family:inherit}
+  .glegend .gbtn:hover{border-color:var(--line2);color:var(--fg)}
+  .glegend .gbtn.on{background:var(--panel3);border-color:var(--accent);color:var(--accent2)}
+  .glegend .gcount{color:var(--dim2);font-variant-numeric:tabular-nums}
   .gwrap{overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px}
   .gsvg{display:block}
   .gsvg text{font:12px "Pretendard","Malgun Gothic",system-ui,sans-serif;fill:var(--fg)}
@@ -1382,6 +1387,10 @@ document.addEventListener('click', async function(e){
   // 실황 타임라인 컨트롤
   const tl = e.target.closest('[data-tlwin],[data-tlpause]');
   if (tl && CC.timeline && CC.timeline.handle(tl)) return;
+
+  // 연결 탭 도구 (실행 중만 / 새로고침)
+  const gb = e.target.closest('[data-gliveonly],[data-ggraph]');
+  if (gb && CC.harness && CC.harness.handleGraphBtn(gb)) return;
 
   const t = e.target.closest('[data-tab],[data-mode],[data-expand],[data-pin],[data-fav],[data-open],'
     + '[data-act],[data-focus],[data-view],[data-goterm],[data-closeterm],[data-lay],[data-ori],[data-solo],'
