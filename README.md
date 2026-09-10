@@ -96,7 +96,8 @@ Claude 쪽과 다른 키가 되어 카드가 둘로 갈리므로 정규화해서
 
 ### 어떻게 끼워 넣었나
 
-편집기는 [SCRIBE](https://github.com/) 의 **빌드 결과물을 그대로** 쓴다. 소스는 한 줄도
+편집기는 **SCRIBE**(별도 프로젝트: React + Vite + CodeMirror 6 로 만든 마크다운 편집기)
+의 **빌드 결과물을 그대로** 쓴다. 소스는 한 줄도
 고치지 않았다. 가능한 이유는 SCRIBE 가 파일에 닿는 통로를 `window.scribe` 하나로
 좁혀 놨기 때문이다 (Electron 에서는 preload 가 넣어주던 객체).
 
