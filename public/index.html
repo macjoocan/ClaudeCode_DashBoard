@@ -88,6 +88,13 @@
   .icon.sx:disabled{opacity:.12;cursor:default}
   .icon.sx:disabled:hover{color:var(--dim2)}
   .tag.hid{color:var(--dim2);border-style:dashed}
+  /* 프로젝트 카드 순서 드래그 */
+  .pgrip{color:var(--dim2);font-size:12px;letter-spacing:-2px;cursor:grab;
+    flex:none;opacity:.3;user-select:none;align-self:center;padding:0 1px}
+  .card:hover .pgrip{opacity:.8}
+  .pgrip:hover{color:var(--accent2);opacity:1}
+  .card.drag{opacity:.5}
+  .card.dropto{border-color:var(--accent2);box-shadow:inset 0 0 0 1px var(--accent2)}
 
   /* ---------------- 카드 그리드 ---------------- */
   main{padding:16px 20px 70px;max-width:1600px;margin:0 auto}
@@ -729,6 +736,10 @@ function terse(){ return VIEW !== 'card'; }
 
 // 숨긴 세션을 볼지. 숨김은 파일을 건드리지 않고 목록에서만 뺀다.
 let SHOWHIDDEN = localStorage.getItem('ccl.showhidden') === '1';
+
+// 손으로 잡아 옮긴 프로젝트 순서 (키 배열). 정렬이 '직접' 일 때만 쓴다.
+let PORDER = JSON.parse(localStorage.getItem('ccl.porder') || '[]');
+function savePorder(){ localStorage.setItem('ccl.porder', JSON.stringify(PORDER)); }
 let openSess = null, openLimit = 40, transTimer = null;
 
 /* ---------------------------------------------------------- 유틸 */
@@ -1102,6 +1113,8 @@ function renderListBar(shown, foldable, foldedN){
     + b('sort','recent','최근',SORT,'최근에 쓴 것부터')
     + b('sort','name','이름',SORT,'이름 가나다순')
     + b('sort','count','세션수',SORT,'세션이 많은 것부터')
+    + b('sort','manual','직접',SORT,'카드 머리글의 ⠿ 를 끌어 내가 정한 순서. '
+        + '아무 카드나 끌면 자동으로 이 모드가 된다')
     + '<span class="cnt">'
     +   shown + '개 표시'
     +   (foldable ? ' · ' + foldedN + '개 접힘' : '')
@@ -1117,12 +1130,46 @@ function foldBtn(key, isFold, hiddenN){
 
 function sortProjects(list){
   const arr = list.slice();
+
+  // 직접 정렬: 내가 잡아 옮긴 순서를 그대로 쓴다.
+  // 고정(★)도 위로 끌어올리지 않는다 - 손으로 놓은 자리를 뒤엎으면 드래그가 안 먹는
+  // 것처럼 보인다. 순서는 사용자가 전적으로 정한다.
+  if (SORT === 'manual'){
+    const rank = {};
+    PORDER.forEach((k,i)=> rank[k] = i);
+    const known = [], fresh = [];
+    arr.forEach(p => (rank[p.key] === undefined ? fresh : known).push(p));
+    known.sort((a,b)=> rank[a.key] - rank[b.key]);
+    fresh.sort((a,b)=> (b.mtime||0) - (a.mtime||0));   // 처음 보는 것은 최근순으로 뒤에
+    return known.concat(fresh);
+  }
+
   if (SORT === 'name') arr.sort((a,b)=> String(a.name).localeCompare(String(b.name),'ko'));
   else if (SORT === 'count') arr.sort((a,b)=> b.sessions.length - a.sessions.length);
   else arr.sort((a,b)=> (b.mtime||0) - (a.mtime||0));
   // 고정한 프로젝트는 정렬과 상관없이 늘 위에
   arr.sort((a,b)=> (b.pinned?1:0) - (a.pinned?1:0));
   return arr;
+}
+
+// 지금 화면 순서를 그대로 PORDER 로 굳힌다 (드래그를 시작할 때 기준을 만든다)
+function freezeOrder(){
+  PORDER = sortProjects(DATA).map(p => p.key);
+  savePorder();
+}
+
+// from 프로젝트를 to 프로젝트 자리로 밀어넣는다
+function moveProject(fromKey, toKey){
+  if (fromKey === toKey) return;
+  if (SORT !== 'manual'){ freezeOrder(); SORT = 'manual'; localStorage.setItem('ccl.sort', SORT); }
+  // 화면에 안 보이는(숨긴) 프로젝트도 PORDER 에 있어야 자리가 안 뒤집힌다
+  if (!PORDER.includes(fromKey) || !PORDER.includes(toKey)) freezeOrder();
+  const a = PORDER.indexOf(fromKey), b = PORDER.indexOf(toKey);
+  if (a < 0 || b < 0) return;
+  PORDER.splice(a, 1);
+  PORDER.splice(b, 0, fromKey);
+  savePorder();
+  render();
 }
 
 function sortSessions(list){
@@ -1146,7 +1193,8 @@ function projectCard(p, ss, emb){
   const fold = collapsed.has(p.key);
   return '<section class="card '+(p.exists?'':'missing')+' '+(p.busyCount?'hasbusy':'')
     +     ' '+(fold?'fold':'')+'">'
-    + '<div class="chead">'
+    + '<div class="chead" data-pcard="'+esc(p.key)+'">'
+    +   '<span class="pgrip" title="끌어서 순서 바꾸기">⠿</span>'
     +   foldBtn(p.key, fold, ss.length)
     +   '<span class="st '+st+'" title="'+stTitle+'"></span>'
     +   '<div class="grow">'
@@ -1451,6 +1499,58 @@ function setTab(t){
   document.querySelectorAll('.tab').forEach(function(b){ b.classList.toggle('on', b.dataset.tab === TAB); });
   render();
 }
+
+/* ------------------------------------------------ 프로젝트 카드 순서 드래그 */
+//
+// 카드는 render() 가 데이터에서 매번 다시 그리므로, 배열 순서만 바꾸면 화면도 따라온다
+// (터미널 패인처럼 CSS order 를 줄 필요가 없다).
+document.addEventListener('pointerdown', function(e){
+  const grip = e.target.closest && e.target.closest('.pgrip');
+  if (!grip || e.button !== 0) return;
+  const head = grip.closest('[data-pcard]');
+  if (!head) return;
+
+  const fromKey = head.dataset.pcard;
+  const sx = e.clientX, sy = e.clientY;
+  let moved = false, overKey = null;
+
+  function mark(k){
+    if (k === overKey) return;
+    const prev = overKey && document.querySelector('[data-pcard="'+CSS.escape(overKey)+'"]');
+    if (prev) prev.closest('.card').classList.remove('dropto');
+    overKey = k;
+    const next = overKey && document.querySelector('[data-pcard="'+CSS.escape(overKey)+'"]');
+    if (next) next.closest('.card').classList.add('dropto');
+  }
+  function move(ev){
+    if (!moved){
+      if (Math.abs(ev.clientX-sx) + Math.abs(ev.clientY-sy) < 5) return;
+      moved = true;
+      head.closest('.card').classList.add('drag');
+      document.body.classList.add('panedrag');
+    }
+    const el = document.elementFromPoint(ev.clientX, ev.clientY);
+    const h = el && el.closest ? el.closest('.card') : null;
+    const hh = h && h.querySelector('[data-pcard]');
+    const k = hh && hh.dataset.pcard !== fromKey ? hh.dataset.pcard : null;
+    mark(k);
+  }
+  function up(){
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    const card = head.closest('.card');
+    if (card) card.classList.remove('drag');
+    document.body.classList.remove('panedrag');
+    const target = overKey;
+    mark(null);
+    if (moved && target){
+      moveProject(fromKey, target);
+      toast('순서를 바꿨습니다 · 정렬이 "직접" 으로 전환됩니다');
+    }
+  }
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+});
 
 /* ---------------------------------------------------------- 이벤트 */
 document.addEventListener('click', async function(e){
