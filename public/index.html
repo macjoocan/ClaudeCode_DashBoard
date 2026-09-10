@@ -75,6 +75,8 @@
     display:flex;gap:5px;align-items:baseline;justify-content:space-between}
   .limbar .lr{color:var(--dim2);font-size:9px;opacity:.85}
   .limbar .lv{font-weight:650;font-size:12.5px;font-variant-numeric:tabular-nums}
+  .limbar .lw{color:var(--dim2);font-size:9px;opacity:.9;font-variant-numeric:tabular-nums;
+    white-space:nowrap}
   .limbar .lbar{height:3px;border-radius:2px;background:var(--line2);overflow:hidden}
   .limbar .lbar i{display:block;height:100%;background:var(--ok);border-radius:2px}
   /* 60% 넘으면 노랑, 85% 넘으면 빨강 */
@@ -918,6 +920,24 @@ function stampLocal(iso){
   const t = Date.parse(iso || '');
   return isFinite(t) ? new Date(t).toLocaleString('ko-KR') : '';
 }
+// 헤더에 넣을 짧은 형태. 오늘이면 시각만, 다른 날이면 날짜까지.
+//
+// 분 단위로 반올림한다. 서버가 주는 값은 초가 59.7 처럼 붙어 있어서 그냥 자르면
+// 16:00 리셋이 "15:59 리셋" 으로 1분 이르게 보인다.
+function whenShort(iso){
+  const t = Date.parse(iso || '');
+  if (!isFinite(t)) return '';
+  const d = new Date(Math.round(t / 60000) * 60000), now = new Date();
+  const hm = String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+  const sameDay = d.getFullYear() === now.getFullYear()
+    && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  if (sameDay) return hm;
+  const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1);
+  const isTomorrow = d.getFullYear() === tomorrow.getFullYear()
+    && d.getMonth() === tomorrow.getMonth() && d.getDate() === tomorrow.getDate();
+  if (isTomorrow) return '내일 ' + hm;
+  return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + hm;
+}
 function sevClass(p){ return p >= 85 ? 'hot' : (p >= 60 ? 'warn' : ''); }
 
 function renderLimits(){
@@ -939,6 +959,10 @@ function renderLimits(){
         +   '<span class="lr">' + esc(untilText(g.resetsAt)) + '</span></span>'
         + '<span class="lv">' + g.percent + '%</span>'
         + '<span class="lbar"><i style="width:' + Math.min(100, Math.max(0, g.percent)) + '%"></i></span>'
+        + (g.resetsAt
+            ? '<span class="lw" title="' + esc(stampLocal(g.resetsAt)) + ' 리셋">'
+              + esc(whenShort(g.resetsAt)) + ' 리셋</span>'
+            : '')
         + '</div>').join('');
 
   const lines = ['사용 한도 (Claude 서버 기준)', ''];
