@@ -29,6 +29,7 @@
   var savedOrder = null;     // 사용자가 드래그로 정한 순서 (localStorage)
   var orderRestored = false;
   var guts = null;           // 손잡이 오버레이 (grid 배치에 끼지 않게 absolute)
+  var refitTimer = null;     // 창 리사이즈 중 xterm 재줄바꿈이 연속 실행되지 않게 모은다
 
   function init(hostEl, changeCb) {
     CC.host = hostEl;
@@ -112,12 +113,41 @@
     host.style.gridTemplateRows = s.r.map(track).join(' ');
   }
 
+  function fitView(v) {
+    if (!v.el.getClientRects().length) return;
+    var buffer = v.term.buffer.active;
+    var atBottom = buffer.viewportY >= buffer.baseY;
+    try {
+      v.fit.fit();
+      // Header sizing can finish after replay. Keep a bottom-pinned view pinned,
+      // but do not pull a user reading older output back down.
+      if (atBottom) v.term.scrollToBottom();
+    } catch (e) {}
+  }
+
   function fitVisible(n) {
     order.slice(0, n).forEach(function (id) {
       var v = views.get(id);
       if (!v) return;
-      try { v.fit.fit(); } catch (e) {}
+      fitView(v);
     });
+  }
+
+  // xterm 은 cols/rows 가 바뀔 때 긴 스크롤백 전체를 다시 줄바꿈한다. 브라우저의
+  // resize 이벤트마다 곧바로 fit 하면 내용이 위아래로 튀는 과정이 그대로 보인다.
+  // 마지막 크기가 정해진 뒤 한 번만 맞춰 같은 작업을 반복하지 않는다.
+  function scheduleRefit() {
+    if (refitTimer) clearTimeout(refitTimer);
+    refitTimer = setTimeout(function () {
+      refitTimer = null;
+      apply();
+    }, 120);
+  }
+
+  function cancelScheduledRefit() {
+    if (!refitTimer) return;
+    clearTimeout(refitTimer);
+    refitTimer = null;
   }
 
   // 레이아웃을 적용하고 보이는 패인만 fit 한다
@@ -251,8 +281,6 @@
       var a = px[idx], total = a + px[idx + 1];
       var pair = arr[idx] + arr[idx + 1];
       var start = isCol ? e.clientX : e.clientY;
-      var lastFit = 0;
-
       g.classList.add('on');
       document.body.classList.add(isCol ? 'gcdrag' : 'grdrag');
 
@@ -262,9 +290,8 @@
         arr[idx] = pair * (na / total);
         arr[idx + 1] = pair - arr[idx];
         applyTemplate(geo);
-        // fit 은 무거우니 드래그 중에는 솎아낸다. 안 하면 캔버스가 잘려 보인다.
-        var now = Date.now();
-        if (now - lastFit > 80) { lastFit = now; fitVisible(n); }
+        // 드래그 중 fit 하면 긴 스크롤백이 계속 재줄바꿈되어 화면이 위아래로 튄다.
+        // 패인 틀만 움직이고 PTY 크기는 손을 놓았을 때 한 번만 맞춘다.
         layoutGuts(geo);
       }
       function up() {
@@ -425,6 +452,10 @@
     term.open(body);
 
     var v = { el: el, head: head, term: term, fit: fit, ws: null, info: info, alive: info.alive };
+    // Explicit navigation wins over the pending initial-replay scroll.
+    ['wheel', 'pointerdown', 'keydown'].forEach(function (name) {
+      body.addEventListener(name, function () { v.replayScroll = null; }, { passive: true });
+    });
     views.set(info.id, v);
     if (order.indexOf(info.id) < 0) order.push(info.id);
 
@@ -811,15 +842,33 @@
     }, function (e) { note('받기 실패: ' + e.message, true); });
   }
 
+  function writeOutput(v, m, ws) {
+    if (!m.replay) { v.term.write(m.d); return; }
+    var token = {};
+    v.replayScroll = token;
+    // write() parses asynchronously: scrolling immediately after write() is too early.
+    v.term.write(m.d, function () {
+      requestAnimationFrame(function () {
+        if (v.ws !== ws || v.replayScroll !== token || !views.has(v.info.id)) return;
+        v.replayScroll = null;
+        fitView(v);
+        v.term.scrollToBottom();
+      });
+    });
+  }
+
   function connect(v) {
+    v.replayScroll = null;
     var ws = new WebSocket('ws://' + location.host + '/term?id=' + encodeURIComponent(v.info.id));
     v.ws = ws;
     ws.onmessage = function (ev) {
+      if (v.ws !== ws) return;
       var m;
       try { m = JSON.parse(ev.data); } catch (e) { return; }
       if (m.t === 'o') {
-        v.term.write(m.d);
+        writeOutput(v, m, ws);
       } else if (m.t === 'reset') {
+        v.replayScroll = null;
         v.term.reset();                    // 서버가 PTY 를 갈아끼웠다
       } else if (m.t === 'm') {
         // /api/terms가 덧붙인 fav/slug는 PTY 메타데이터에 없으므로 보존한다.
@@ -883,7 +932,7 @@
 
   function solo(id) { setLayout(1); focus(id); }
 
-  function refit() { apply(); }
+  function refit() { cancelScheduledRefit(); apply(); }
 
   // 서버 목록과 화면을 맞춘다 (새로고침 후 살아있는 터미널 되살리기)
   function sync(serverTerms) {
@@ -983,11 +1032,11 @@
     paneHead(v);
   }
 
-  window.addEventListener('resize', function () { apply(); });
+  window.addEventListener('resize', scheduleRefit);
   initDrop();
 
   CC.term = {
-    init: init, open: open, sync: sync, refit: refit,
+    init: init, open: open, sync: sync, refit: refit, scheduleRefit: scheduleRefit,
     show: focus, focus: focus, solo: solo,
     setLayout: setLayout, getLayout: getLayout, slots: slots,
     setOrient: setOrient, getOrient: getOrient,

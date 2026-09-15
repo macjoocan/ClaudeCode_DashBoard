@@ -24,6 +24,12 @@
   ::-webkit-scrollbar{width:10px;height:10px}
   ::-webkit-scrollbar-thumb{background:#3a342c;border-radius:6px}
   ::-webkit-scrollbar-track{background:transparent}
+  .session-filters{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 0}
+  .session-filters select{font:inherit;background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px}
+  #attention-panel{position:fixed;right:12px;top:12px;width:min(520px,calc(100vw - 24px));max-height:80vh;overflow:auto;z-index:45;background:var(--panel);border:1px solid var(--line2);border-radius:10px;padding:16px;box-shadow:0 8px 30px #0008}
+  #attention-list{display:grid;gap:6px;margin-top:12px}
+  .attention-item{font:inherit;color:var(--fg);background:var(--panel2);border:1px solid var(--line);padding:10px;text-align:left;border-radius:6px;cursor:pointer;overflow-wrap:anywhere}
+  .attention-item.unread{border-left:3px solid var(--accent)}
 
   /* ---------------- 헤더 / 탭 ---------------- */
   header{position:sticky;top:0;z-index:20;background:rgba(18,16,14,.96);
@@ -719,6 +725,7 @@
     <span id="tok" class="tokbar" hidden></span>
     <button class="btn ghost" id="layout" title="한 줄에 하나씩 넓게 보기">넓게</button>
     <button class="btn ghost" id="refresh" title="다시 스캔">&#8635;</button>
+    <button class="btn ghost" id="attention-toggle" aria-controls="attention-panel" aria-expanded="false">알림 0</button>
   </div>
   <div class="tabs" id="tabs">
     <button class="tab on" data-tab="all">전체<span class="n" id="n-all">0</span></button>
@@ -734,6 +741,11 @@
 </header>
 
 <main id="main">
+  <div class="session-filters" id="session-filters">
+    <label>AI <select id="filter-provider"><option value="all">전체 AI</option><option value="claude">Claude</option><option value="codex">Codex</option></select></label>
+    <label>최근 활동 <select id="filter-period"><option value="all">전체 기간</option><option value="today">오늘</option><option value="7">최근 7일</option><option value="30">최근 30일</option></select></label>
+    <button class="btn ghost xs" id="filter-reset">필터 초기화</button>
+  </div>
   <div class="listbar" id="listbar"></div>
   <div class="grid" id="list"><div class="empty">불러오는 중&#8230;</div></div>
   <div id="termwrap" hidden>
@@ -793,6 +805,12 @@
   </div>
 </div>
 <div id="toast"></div>
+<section id="attention-panel" hidden aria-label="세션 알림함">
+  <div class="row"><strong>세션 알림함 · 최근 50개</strong><button class="btn ghost xs" id="attention-close">닫기</button></div>
+  <p>응답 완료·승인 요청·실패를 모아 봅니다. 항목을 누르면 세션으로 이동합니다.</p>
+  <div class="row"><button class="btn xs" id="attention-read">모두 읽음</button><button class="btn xs" id="attention-desktop">데스크톱 알림: 꺼짐</button></div>
+  <div id="attention-list"></div>
+</section>
 
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
@@ -800,6 +818,7 @@
 <script src="/md.js"></script>
 <script src="/term.js"></script>
 <script src="/live.js"></script>
+<script src="/attention.js"></script>
 <script src="/config-edit.js"></script>
 <script src="/timeline.js"></script>
 <script src="/harness-ui.js"></script>
@@ -1197,6 +1216,15 @@ async function launch(action, cwd, sessionId, title, provider){
 /* ---------------------------------------------------------- 렌더 */
 function terms(){ return $('#q').value.trim().toLowerCase().split(/\s+/).filter(Boolean); }
 function hit(p, s, ts){
+  const provider = $('#filter-provider').value;
+  if (provider !== 'all' && s.provider !== provider) return false;
+  const period = $('#filter-period').value;
+  if (period !== 'all') {
+    const start = new Date();
+    if (period === 'today') start.setHours(0, 0, 0, 0);
+    else start.setTime(start.getTime() - Number(period) * 86400000);
+    if (!(Number(s.mtime) >= start.getTime())) return false;
+  }
   // 숨긴 세션은 기본으로 목록에서 뺀다. 실행 중인 것은 숨겨도 보여준다 -
   // 지금 돌고 있는 세션이 화면에서 사라지면 찾을 길이 없어진다.
   if (s.hidden && !SHOWHIDDEN && !s.live) return false;
@@ -1590,6 +1618,7 @@ function render(){
   const isCfg   = TAB === 'cfg';
   const isTl    = TAB === 'flow';
   const isMd    = TAB === 'md';
+  $('#session-filters').hidden = !['all', 'fav', 'live'].includes(TAB);
   $('#termwrap').hidden    = !isTerm;
   $('#graphwrap').hidden   = !isGraph;
   $('#cfgwrap').hidden     = !isCfg;
@@ -2341,6 +2370,18 @@ $('#layout').onclick = function(){
   $('#layout').textContent = WIDE ? '카드' : '넓게'; render();
 };
 $('#q').addEventListener('input', render);
+for (const id of ['filter-provider', 'filter-period']) {
+  const select = document.getElementById(id);
+  const saved = localStorage.getItem('ccl.' + id);
+  if (saved && Array.from(select.options).some(o => o.value === saved)) select.value = saved;
+  select.addEventListener('change', () => { localStorage.setItem('ccl.' + id, select.value); render(); });
+}
+$('#filter-reset').onclick = () => {
+  for (const id of ['filter-provider', 'filter-period']) {
+    document.getElementById(id).value = 'all'; localStorage.removeItem('ccl.' + id);
+  }
+  $('#q').value = ''; render();
+};
 $('#q').addEventListener('keydown', function(e){
   if (e.key === 'Escape'){ $('#q').value=''; render(); }
   if (e.key === 'Enter'){
@@ -2393,13 +2434,17 @@ function updateCfgBadge(){
 
 /* 헤더 높이는 줄바꿈에 따라 달라지므로 실측해서 --hh 에 넣는다.
    고정값을 쓰면 터미널 아래쪽(입력줄·상태줄)이 잘린다. */
+let lastHeaderHeight = 0;
 function syncHeaderHeight(){
   const h = document.querySelector('header').offsetHeight;
+  if (h === lastHeaderHeight) return;
+  lastHeaderHeight = h;
   document.documentElement.style.setProperty('--hh', h + 'px');
-  CC.term.refit();
+  // 창 resize와 헤더 줄바꿈이 같은 순간에 들어오므로 같은 지연 큐에 합친다.
+  CC.term.scheduleRefit();
 }
-window.addEventListener('resize', syncHeaderHeight);
 if (window.ResizeObserver) new ResizeObserver(syncHeaderHeight).observe(document.querySelector('header'));
+else window.addEventListener('resize', syncHeaderHeight);
 
 /* ---------------------------------------------------------- 시작 */
 CC.term.init($('#termhost'), function(){ renderTermBar(); renderCounts(); });
@@ -2408,7 +2453,23 @@ syncHeaderHeight();
 // 실시간 훅 이벤트: 훅 설치 여부와 무관하게 스트림에 붙어 둔다 (설치하면 바로 흐른다)
 CC.timeline.init($('#tlwrapouter'));
 CC.timeline.start();
+function resolveAttention(row) {
+  return allSessions().find(s => s.id === row.sessionId && (!row.provider || s.provider === row.provider));
+}
+CC.attention.init(resolveAttention, row => {
+  const term = TERMS.find(t => t.sessionId === row.sessionId && t.alive
+    && (!row.provider || t.provider === row.provider));
+  if (term) { setTab('term'); CC.term.show(term.id); }
+  else {
+    const session = resolveAttention(row);
+    if (!session) { toast('목록에 없는 세션입니다. 새로고침 후 다시 확인해 주세요.', true); return; }
+    showSession(session.provider, session.slug, session.id);
+  }
+  $('#attention-panel').hidden = true;
+  $('#attention-toggle').setAttribute('aria-expanded', 'false');
+});
 CC.live.onUpdate = function(ev){
+  CC.attention.update(ev, CC.live.feed);
   CC.harness.onLiveEvent(ev);
   CC.timeline.onEvent();
   // 응답이 끝나면 usage 가 기록되므로 그때 토큰 표시를 갱신한다

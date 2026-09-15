@@ -27,6 +27,7 @@
     Stop:              { ko: '응답 완료',    cls: 'e-life' },
     StopFailure:       { ko: '응답 실패',    cls: 'e-fail' },
     Notification:      { ko: '알림',        cls: 'e-note' },
+    PermissionRequest: { ko: '승인 요청',    cls: 'e-note' },
     PreCompact:        { ko: '압축 시작',    cls: 'e-note' },
     PostCompact:       { ko: '압축 완료',    cls: 'e-note' },
   };
@@ -106,6 +107,8 @@
       case 'Notification':
         if (ev.text === 'permission_prompt') s.phase = 'waiting';
         break;
+      case 'PermissionRequest': s.phase = 'waiting'; break;
+      case 'Interrupt': s.phase = 'idle'; s.tools = []; break;
     }
   }
 
