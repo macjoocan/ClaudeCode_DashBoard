@@ -1,4 +1,4 @@
-// Claude Code Session Launcher - 로컬 전용 서버 (의존성 없음)
+// AI Coding Session Launcher - Claude Code/Codex 공용 로컬 서버
 // ~/.claude/projects 를 스캔해 세션 목록을, ~/.claude/sessions 를 읽어 실행 상태를 만들고,
 // 클릭하면 Windows Terminal 에 해당 프로젝트 폴더로 claude 를 띄운다.
 
@@ -28,14 +28,17 @@ const codexHooks = require('./codex-hooks-install.js');
 const cfgWrite = require('./config-write');
 const codex = require('./codex.js');
 const usage = require('./usage.js');   // 세션 하나의 사용량 (카드·대화 헤더)
-const tokens = require('./tokens');    // 전체 합계 (헤더 바: 오늘 / 최근 5시간)
+const providerMetrics = require('./provider-metrics'); // Claude/Codex 공통 한도·기간 사용량
+const { createBridge } = require('./bridge');
+const { commandFor, pasted } = require('./session-actions');
+const { createHandoff } = require('./handoff');
 const scribe = require('./scribe');    // 마크다운 편집기 (SCRIBE 빌드물 + 파일 브리지)
-const limits = require('./limits');    // 사용 한도(%) 와 리셋 시각
 
 const HOOK_URL = `http://${'127.0.0.1'}:${Number(process.env.CC_LAUNCHER_PORT || 7788)}/api/hook`;
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CC_LAUNCHER_PORT || 7788);
+const API_VERSION = 2; // launchers use this to distinguish a stale in-memory server
 const CLAUDE_HOME = path.join(os.homedir(), '.claude');
 const PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects');
 const LIVE_DIR = path.join(CLAUDE_HOME, 'sessions'); // <pid>.json = 살아있는 세션 상태
@@ -44,6 +47,25 @@ const PINS_FILE = path.join(__dirname, 'pins.json');
 const FAVS_FILE = path.join(__dirname, 'favorites.json'); // "<slug>/<sessionId>" 목록
 const HIDDEN_FILE = path.join(__dirname, 'hidden.json');  // 목록에서 숨긴 세션 (같은 형식)
 const FOCUS_PS1 = path.join(__dirname, 'focus-window.ps1');
+
+// state DB 의 rolloutPath 는 외부 입력처럼 취급한다. 지표 파서는 숫자만 돌려주지만,
+// 애초에 ~/.codex/sessions 밖의 파일을 읽을 이유가 없다.
+function codexMetricRows() {
+  return codex.sessions().filter(s => s.rolloutPath && codex.isInsideSessions(s.rolloutPath));
+}
+
+// 여러 브라우저 탭이 같은 주기로 대용량 세션 파일을 다시 읽으면 Node의 단일
+// 이벤트 루프가 지표 계산만 하다가 health 요청조차 처리하지 못한다. 짧은 서버 공용
+// 캐시로 탭 수와 무관하게 실제 디스크 스캔 횟수를 제한한다.
+const metricResponseCache = new Map();
+function cachedMetric(name, ttlMs, build) {
+  const now = Date.now();
+  const hit = metricResponseCache.get(name);
+  if (hit && now - hit.at < ttlMs) return hit.value;
+  const value = build();
+  metricResponseCache.set(name, { at: now, value });
+  return value;
+}
 
 const HEAD_BYTES = 96 * 1024;
 const HEAD_MAX = 2 * 1024 * 1024;   // 거대 레코드가 앞을 막고 있을 때 넓혀 읽는 한계
@@ -56,6 +78,32 @@ const SAFE_ID = /^[A-Za-z0-9\-]+$/;
 const CLAUDE_BIN = findClaudeBin();
 const CODEX_BIN = codex.findCodexBin();
 const WT_BIN = findBin('wt.exe');
+
+const sessionBridge = createBridge({
+  terminals,
+  startTarget(target) {
+    return terminals.create({
+      action: 'resume', cwd: target.cwd, sessionId: target.id, title: target.title,
+      claudeBin: CLAUDE_BIN, codexBin: CODEX_BIN, provider: target.provider,
+    });
+  },
+});
+
+const handoffManager = createHandoff({
+  terminals,
+  readTranscript(job) {
+    if (job.sourceProvider === 'codex') return codex.transcript(job.sourceSessionId, 80).msgs;
+    const found = findScannedSession('claude', job.sourceSessionId);
+    if (!found) throw new Error('Claude 세션 기록을 찾지 못했습니다');
+    return transcript(found.s.slug, found.s.id, 80).messages;
+  },
+  startTarget(target) {
+    return terminals.create({
+      action: 'new', cwd: target.cwd, title: target.title,
+      claudeBin: CLAUDE_BIN, codexBin: CODEX_BIN, provider: target.provider,
+    });
+  },
+});
 
 function findBin(name) {
   try {
@@ -351,6 +399,25 @@ function sessionToken(provider, slug, id) {
   if (provider === 'codex') return 'codex:' + id;
   if (!SAFE_SLUG.test(String(slug || ''))) throw new Error('잘못된 세션 지정');
   return `${slug}/${id}`;
+}
+
+function findScannedSession(provider, id, projects) {
+  for (const p of (projects || scan())) for (const s of p.sessions) {
+    if (s.provider === provider && s.id === id) return { p, s };
+  }
+  return null;
+}
+
+function termsWithFavorites() {
+  const projects = scan();
+  return terminals.list().map(t => {
+    if (!t.sessionId) return Object.assign({}, t, { fav: false, slug: null });
+    const found = findScannedSession(t.provider, t.sessionId, projects);
+    return Object.assign({}, t, {
+      fav: !!(found && found.s.fav),
+      slug: found && found.s.slug || null,
+    });
+  });
 }
 
 // -------------------------------------------------------- 대화 내용 (트랜스크립트)
@@ -708,6 +775,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    if (url.pathname === '/api/health') {
+      return json(res, 200, { ok: true, app: 'cc-launcher', apiVersion: API_VERSION, port: PORT });
+    }
+
     if (url.pathname === '/api/projects') {
       return json(res, 200, {
         projects: scan(),
@@ -717,6 +788,8 @@ const server = http.createServer(async (req, res) => {
 
     // 사용량은 Claude 쪽이 파일 전체 읽기라 비싸다. scan() 과 분리해 여기서만 계산한다.
     if (url.pathname === '/api/usage') {
+      const cached = metricResponseCache.get('usage');
+      if (cached && Date.now() - cached.at < 10000) return json(res, 200, cached.value);
       const out = { projects: {}, sessions: {} };
       // Codex 는 rollout 파일 끝의 token_count 레코드를 읽어야 Claude 와 같은 정의의
       // billable 이 나온다. rolloutPath 는 scan() 결과에 없으므로 여기서 한 번만 만든다
@@ -745,6 +818,7 @@ const server = http.createServer(async (req, res) => {
         }
         out.projects[p.key] = { billable, cacheRead, approx };
       }
+      metricResponseCache.set('usage', { at: Date.now(), value: out });
       return json(res, 200, out);
     }
 
@@ -1083,11 +1157,14 @@ const server = http.createServer(async (req, res) => {
     // 사용 한도. 비공식 endpoint 라 실패해도 200 으로 ok:false 만 돌려준다 -
     // 헤더 바가 오류로 깨지면 안 된다.
     if (url.pathname === '/api/limits') {
-      return json(res, 200, await limits.limits({ force: url.searchParams.get('force') === '1' }));
+      return json(res, 200, await providerMetrics.limits(codexMetricRows(), {
+        force: url.searchParams.get('force') === '1',
+      }));
     }
 
     if (url.pathname === '/api/tokens') {
-      return json(res, 200, tokens.usage());
+      return json(res, 200, cachedMetric('tokens', 15000,
+        () => providerMetrics.tokens(codexMetricRows())));
     }
 
     // ------- 하네스 구성 / 그래프 -------
@@ -1104,7 +1181,89 @@ const server = http.createServer(async (req, res) => {
 
     // ------- 대시보드 내장 터미널 -------
     if (url.pathname === '/api/terms') {
-      return json(res, 200, { terms: terminals.list() });
+      return json(res, 200, { terms: termsWithFavorites() });
+    }
+
+    if (url.pathname === '/api/term/fav' && req.method === 'POST') {
+      const b = await readBody(req);
+      const t = terminals.get(String(b.id || ''));
+      if (!t || t.exitCode != null) throw new Error('실행 중인 터미널이 없습니다');
+      const inf = terminals.info(t);
+      if (!inf.sessionId) throw new Error('첫 메시지를 보낸 뒤 세션 ID가 확인되면 즐겨찾기할 수 있습니다');
+      const found = findScannedSession(inf.provider, inf.sessionId);
+      if (!found) throw new Error('세션 기록을 찾지 못했습니다');
+      const token = sessionToken(inf.provider, found.s.slug, inf.sessionId);
+      const favs = loadFavs();
+      const i = favs.indexOf(token);
+      if (i >= 0) favs.splice(i, 1); else favs.push(token);
+      saveFavs(favs);
+      return json(res, 200, { ok: true, fav: i < 0 });
+    }
+
+    if (url.pathname === '/api/term/context' && req.method === 'POST') {
+      const b = await readBody(req);
+      const id = String(b.id || '');
+      const t = terminals.get(id);
+      if (!t || t.exitCode != null) throw new Error('실행 중인 터미널이 없습니다');
+      const inf = terminals.info(t);
+      if (inf.status === 'busy' || inf.status === 'waiting') {
+        throw new Error('작업 또는 승인 대기가 끝난 뒤 실행해 주세요');
+      }
+      if (!inf.status && Date.now() - Number(t.lastAt || 0) < 1500) {
+        throw new Error('터미널 출력이 멈춘 뒤 실행해 주세요');
+      }
+      if (b.action === 'compact') {
+        if (!terminals.write(id, pasted(commandFor(inf.provider, 'compact'))))
+          throw new Error('컨텍스트 압축 명령을 입력하지 못했습니다');
+        return json(res, 200, { ok: true, action: 'compact' });
+      }
+      if (b.action === 'clear') {
+        const fresh = await terminals.fresh(id, { claudeBin: CLAUDE_BIN, codexBin: CODEX_BIN });
+        if (!fresh) throw new Error('터미널이 없습니다');
+        return json(res, 200, { ok: true, action: 'clear', term: terminals.info(fresh) });
+      }
+      throw new Error('지원하지 않는 컨텍스트 작업입니다');
+    }
+
+    if (url.pathname === '/api/term/handoff' && req.method === 'POST') {
+      const b = await readBody(req);
+      return json(res, 200, { ok: true, job: await handoffManager.start(String(b.id || '')) });
+    }
+
+    if (url.pathname === '/api/handoff/status') {
+      const job = handoffManager.get(url.searchParams.get('id'));
+      if (!job) return json(res, 404, { error: '세션 전환 작업을 찾지 못했습니다' });
+      return json(res, 200, { ok: true, job });
+    }
+
+    // ------- Claude ↔ Codex 수동 메시지 브리지 -------
+    if (url.pathname === '/api/bridge/send' && req.method === 'POST') {
+      const b = await readBody(req);
+      const projects = scan();
+      const source = findScannedSession(b.sourceProvider, String(b.sourceId || ''), projects);
+      const target = findScannedSession(b.targetProvider, String(b.targetId || ''), projects);
+      if (!source || !target) throw new Error('세션을 찾지 못했습니다. 목록을 새로고침해 주세요');
+      if (source.s.provider === target.s.provider) throw new Error('Claude와 Codex 사이에서만 전달할 수 있습니다');
+      const embedded = terminals.list().find(t => t.alive && t.provider === target.s.provider
+        && t.sessionId === target.s.id);
+      if (target.s.live && !embedded) {
+        throw new Error('대상 세션이 외부 창에서 실행 중입니다. 대시보드 터미널로 연 뒤 전달해 주세요');
+      }
+      const message = await sessionBridge.send({
+        source: { provider: source.s.provider, id: source.s.id,
+          title: source.s.title, project: source.p.cwd },
+        target: { provider: target.s.provider, id: target.s.id,
+          title: target.s.title, cwd: target.p.cwd },
+        text: b.text,
+      });
+      if (message.status === 'failed') throw new Error(message.error || '전달하지 못했습니다');
+      return json(res, 200, { ok: true, message });
+    }
+
+    if (url.pathname === '/api/bridge/status') {
+      const message = sessionBridge.get(url.searchParams.get('id'));
+      if (!message) return json(res, 404, { error: '브리지 메시지를 찾지 못했습니다' });
+      return json(res, 200, { ok: true, message });
     }
 
     if (url.pathname === '/api/term/new' && req.method === 'POST') {
@@ -1163,17 +1322,39 @@ server.on('upgrade', (req, socket, head) => {
 
 function shutdown() {
   console.log('');
-  console.log('종료합니다 - 내장 터미널의 claude 프로세스를 정리합니다.');
+  console.log('종료합니다 - 내장 터미널의 AI 프로세스를 정리합니다.');
   terminals.killAll();
+  sessionBridge.close();
+  handoffManager.close();
   process.exit(0);
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 process.on('SIGHUP', shutdown);
 
+// 중복 실행에서도 Node의 Unhandled 'error' 스택을 그대로 내보내지 않는다.
+// 기존 프로세스에는 내장 터미널이 있을 수 있으므로 절대 종료하지 않는다.
+server.on('error', err => {
+  if (err && err.code === 'EADDRINUSE') {
+    const addr = `http://${HOST}:${PORT}`;
+    console.log(`이미 대시보드가 실행 중입니다: ${addr}`);
+    console.log('기존 서버와 내장 터미널은 그대로 유지합니다.');
+    sessionBridge.close();
+    handoffManager.close();
+    if (!process.env.CC_LAUNCHER_NO_OPEN) {
+      try { spawn('cmd.exe', ['/c', 'start', '', addr], { detached: true, stdio: 'ignore' }).unref(); } catch {}
+    }
+    return process.exit(0);
+  }
+  console.error('서버를 시작하지 못했습니다:', (err && err.message) || err);
+  sessionBridge.close();
+  handoffManager.close();
+  process.exit(1);
+});
+
 server.listen(PORT, HOST, () => {
   const addr = `http://${HOST}:${PORT}`;
-  console.log('Claude Code Session Launcher');
+  console.log('AI Coding Session Launcher');
   console.log(`  주소     : ${addr}`);
   console.log(`  claude   : ${CLAUDE_BIN}`);
   console.log(`  terminal : ${WT_BIN || 'Windows Terminal 없음 → PowerShell 창 사용'}`);

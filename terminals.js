@@ -105,7 +105,7 @@ function wire(t, p) {
 // 터미널 id 를 그대로 쓰기 때문에 패인 위치·크기·탭 순서가 유지된다.
 // 세션 ID 를 확보한 상태면 `--resume` 으로 대화를 이어서 켠다. 세션 기록은 파일에
 // 계속 쌓이고 있으므로 재시작해도 대화가 남는다. 다만 **응답 중이던 내용은 사라진다.**
-function restart(id, { claudeBin, codexBin }) {
+function restart(id, { claudeBin, codexBin }, freshStart) {
   const t = terms.get(id);
   if (!t) return Promise.resolve(null);
 
@@ -126,7 +126,7 @@ function restart(id, { claudeBin, codexBin }) {
 
   return wait.then(() => {
     // 이어서 켤 세션이 있는지 본다. 시작 직후 죽어 세션 ID 를 못 받았으면 새로 시작한다.
-    const sid = t.sessionId;
+    const sid = freshStart ? null : t.sessionId;
     const action = sid ? 'resume' : 'new';
     const args = isCodex
       ? require('./codex.js').codexArgs(action, sid)
@@ -142,6 +142,7 @@ function restart(id, { claudeBin, codexBin }) {
     t.proc = p;
     t.pid = p.pid;
     t.action = action;
+    t.sessionId = sid;
     t.exitCode = null;
     t.exitedAt = null;
     t.startedAt = Date.now();
@@ -155,6 +156,10 @@ function restart(id, { claudeBin, codexBin }) {
     return t;
   });
 }
+
+// 기존 패인과 provider는 유지하고 저장된 대화는 이어받지 않는 새 CLI를 띄운다.
+// provider마다 다른 /clear 계열 명령에 의존하지 않아 같은 의미를 보장한다.
+function fresh(id, bins) { return restart(id, bins, true); }
 
 function send(t, msg) {
   const s = JSON.stringify(msg);
@@ -199,7 +204,7 @@ function info(t) {
   // 세션의 상태 파일을 주워 그 Claude 카드가 Codex 터미널을 가리키게 된다.
   const live = t.exitCode != null ? null
     : (t.provider === 'codex' ? codexLiveInfo(t.pid) : liveInfo(t.pid));
-  if (live && live.sessionId && !t.sessionId) t.sessionId = live.sessionId;  // 새 세션의 ID 확보
+  if (live && live.sessionId) t.sessionId = live.sessionId;  // 컨텍스트 초기화 뒤 바뀐 ID도 반영
   return {
     id: t.id, title: t.title, cwd: t.cwd, action: t.action,
     provider: t.provider || 'claude',
@@ -294,4 +299,4 @@ function killAll() {
   for (const t of terms.values()) { if (t.exitCode == null) { try { t.proc.kill(); } catch {} } }
 }
 
-module.exports = { create, restart, list, get, info, write, resize, kill, close, attach, killAll };
+module.exports = { create, restart, fresh, list, get, info, write, resize, kill, close, attach, killAll };

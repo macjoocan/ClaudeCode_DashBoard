@@ -2,7 +2,7 @@
   "name": "cc-launcher",
   "version": "2.0.0",
   "private": true,
-  "description": "Claude Code 세션 런처 - 한 페이지에서 모든 프로젝트의 세션을 보고 실행한다",
+  "description": "Claude Code와 OpenAI Codex 세션을 한 화면에서 관리하는 로컬 대시보드",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

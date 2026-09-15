@@ -459,6 +459,16 @@
       + '<span class="nm">' + escText(i.name || i.title || proj) + '</span>'
       + '<span class="pj">' + escText(proj) + ' · ' + st + rs + '</span>'
       + '<span class="sp"></span>'
+      + '<button class="pbtn fav ' + (i.fav ? 'on' : '') + '" data-termfav="' + id + '"'
+      +   (!i.sessionId ? ' disabled' : '')
+      +   ' title="이 세션 즐겨찾기">' + (i.fav ? '★' : '☆') + '</button>'
+      + '<button class="pbtn ctx" data-termctx="compact" data-termid="' + id + '"'
+      +   (!i.alive ? ' disabled' : '') + ' title="현재 대화를 요약 압축해 컨텍스트 공간 확보">압축</button>'
+      + '<button class="pbtn ctx warn" data-termctx="clear" data-termid="' + id + '"'
+      +   (!i.alive ? ' disabled' : '') + ' title="대화 기록은 보존하고 빈 컨텍스트의 새 세션 시작">초기화</button>'
+      + '<button class="pbtn ctx" data-termhandoff="' + id + '"'
+      +   (!i.alive || !i.sessionId ? ' disabled' : '')
+      +   ' title="현재 AI가 인수인계를 요약한 뒤 반대편 AI로 전환">AI 전환</button>'
       + '<button class="pbtn nav" data-movepane="' + id + '" data-dir="-1"'
       +   (canNudge(i.id, -1) ? '' : ' disabled')
       +   ' title="앞 자리로 (Alt+←)">◀</button>'
@@ -812,7 +822,8 @@
       } else if (m.t === 'reset') {
         v.term.reset();                    // 서버가 PTY 를 갈아끼웠다
       } else if (m.t === 'm') {
-        v.info = m.info; v.alive = m.info.alive;
+        // /api/terms가 덧붙인 fav/slug는 PTY 메타데이터에 없으므로 보존한다.
+        v.info = Object.assign({}, v.info, m.info); v.alive = m.info.alive;
         paneHead(v);
         if (onChange) onChange();
       } else if (m.t === 'x') {
@@ -965,6 +976,13 @@
     return order.map(function (id) { return views.get(id).info; });
   }
 
+  function patch(id, values) {
+    var v = views.get(id);
+    if (!v) return;
+    v.info = Object.assign({}, v.info, values || {});
+    paneHead(v);
+  }
+
   window.addEventListener('resize', function () { apply(); });
   initDrop();
 
@@ -976,7 +994,7 @@
     stop: stop, close: close, drop: drop,
     reload: reload, restart: restart,
     moveTo: moveTo, nudge: nudge, resetSizes: resetSizes,
-    list: listLocal,
+    list: listLocal, patch: patch,
     // 탭 바가 패인 순서를 따라가게 한다
     orderOf: function (id) { var i = order.indexOf(id); return i < 0 ? 9999 : i; },
     // 디버깅·테스트용: 특정 터미널의 xterm 인스턴스

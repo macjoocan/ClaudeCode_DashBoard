@@ -19,14 +19,18 @@ test('install 은 12개 이벤트를 전부 건다', () => {
   const j = JSON.parse(fs.readFileSync(path.join(dir, 'hooks.json'), 'utf8'));
   assert.ok(j.hooks.PreToolUse);
   assert.equal(j.hooks.PreToolUse[0].hooks[0].type, 'command');
+  assert.ok(j.hooks.PreToolUse[0].hooks[0].command.startsWith('node '));
+  assert.ok(j.hooks.PreToolUse[0].hooks[0].command.includes(path.join(__dirname, '..', 'codex-hook.js')));
+  assert.equal(j.hooks.PreToolUse[0].hooks[0].args, undefined);
 });
 
-test('SessionEnd 를 뺀 나머지는 async 다', () => {
+test('Codex 훅은 동기 command 형식과 이벤트별 timeout 을 쓴다', () => {
   const { dir, mod } = fresh();
   mod.install();
   const j = JSON.parse(fs.readFileSync(path.join(dir, 'hooks.json'), 'utf8'));
-  assert.equal(j.hooks.PreToolUse[0].hooks[0].async, true);
+  assert.equal(j.hooks.PreToolUse[0].hooks[0].async, undefined);
   assert.equal(j.hooks.SessionEnd[0].hooks[0].async, undefined);
+  assert.equal(j.hooks.PreToolUse[0].hooks[0].timeout, 10);
   assert.ok(j.hooks.SessionEnd[0].hooks[0].timeout <= 3);
 });
 
@@ -72,6 +76,24 @@ test('install 에 url 을 넘기면 명령에 그 url 이 박힌다', () => {
   mod.install(url);
   const j = JSON.parse(fs.readFileSync(path.join(dir, 'hooks.json'), 'utf8'));
   assert.ok(j.hooks.PreToolUse[0].hooks[0].command.includes(url));
+});
+
+test('install upgrades a legacy combined command entry', () => {
+  const { dir, mod } = fresh();
+  fs.writeFileSync(path.join(dir, 'hooks.json'), JSON.stringify({
+    hooks: { PreToolUse: [{ matcher: '*', hooks: [{
+      type: 'command',
+      command: `"${process.execPath}" "C:\\old\\codex-hook.js" "http://127.0.0.1:7788/api/hook"`,
+      statusMessage: 'cc-launcher',
+    }] }] },
+  }), 'utf8');
+
+  mod.install();
+  const j = JSON.parse(fs.readFileSync(path.join(dir, 'hooks.json'), 'utf8'));
+  assert.equal(j.hooks.PreToolUse.length, 1);
+  assert.ok(j.hooks.PreToolUse[0].hooks[0].command.startsWith('node '));
+  assert.ok(j.hooks.PreToolUse[0].hooks[0].command.includes('http://127.0.0.1:7788/api/hook'));
+  assert.equal(j.hooks.PreToolUse[0].hooks[0].args, undefined);
 });
 
 test('url 이 박혀 있어도 isOurs/uninstall 은 여전히 우리 항목으로 인식한다', () => {

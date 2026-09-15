@@ -82,6 +82,14 @@ test('SessionStart 는 실행 상태 파일을 만든다', () => {
   assert.equal(j.status, 'idle');
 });
 
+test('snake_case Codex event name is normalized and creates live state', () => {
+  const live = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-live-'));
+  const env = { CCL_LIVE_DIR: live, CCL_HOOK_URL: 'http://127.0.0.1:1/api/hook' };
+  runHook({ hook_event_name: 'session_start', session_id: 'snake-event', cwd: 'D:\\x' }, env);
+  const got = JSON.parse(fs.readFileSync(path.join(live, 'snake-event.json'), 'utf8'));
+  assert.equal(got.status, 'idle');
+});
+
 test('UserPromptSubmit 은 busy, Stop 은 idle 로 바꾼다', () => {
   const live = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-live-'));
   const env = { CCL_HOOK_URL: 'http://127.0.0.1:1/api/hook', CCL_LIVE_DIR: live };

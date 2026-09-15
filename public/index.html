@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Claude Code 세션 런처</title>
+<title>AI 코딩 세션 런처</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2312100e'/%3E%3Ccircle cx='16' cy='16' r='7' fill='%23d97757'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/vendor/xterm.css">
 <style>
@@ -87,6 +87,9 @@
   .limbar .lg.off:hover{opacity:1}
   .limbar .lg.off .lv{color:var(--dim2);font-weight:600}
   .limbar .lg.plan .lv{color:var(--dim);font-weight:600;font-size:11px}
+  .limbar .provider-start{border-left:2px solid color-mix(in srgb,var(--accent) 55%,var(--line))!important}
+  .limbar .provider-name{color:var(--accent2);font-weight:700}
+  .tokbar .provider-start{border-left:2px solid color-mix(in srgb,var(--accent) 55%,var(--line))!important}
 
   /* ---------------- 버튼 ---------------- */
   .btn{background:var(--panel2);border:1px solid var(--line);color:var(--fg);
@@ -287,6 +290,8 @@
     background:var(--panel3);color:var(--dim);border-radius:4px;font-size:10px;font-weight:700}
   .termpane.active .ph2 .pos{background:var(--accent);color:var(--bg)}
   .termpane .ph2 .pbtn.nav{font-size:10px;padding:2px 3px}
+  .termpane .ph2 .pbtn.ctx{font-size:10px;padding:2px 5px;border:1px solid var(--line);border-radius:4px}
+  .termpane .ph2 .pbtn.fav.on{color:var(--warn)}
   .termpane .ph2 .pbtn:disabled{opacity:.25;cursor:default}
   .termpane .ph2 .pbtn:disabled:hover{color:var(--dim2);background:none}
   .termpane .pb2{flex:1;min-height:0;padding:6px 2px 4px 8px;overflow:hidden}
@@ -585,6 +590,24 @@
     padding:13px 15px;resize:none;outline:none}
   .dmf{padding:8px 14px}
 
+  /* Claude ↔ Codex 메시지 전달 창 */
+  #bridgemodal{position:fixed;inset:0;z-index:75;background:rgba(0,0,0,.68);
+    display:flex;align-items:center;justify-content:center;padding:20px}
+  #bridgemodal[hidden]{display:none}
+  .bbox{width:min(680px,100%);background:var(--panel);border:1px solid var(--line2);
+    border-radius:13px;box-shadow:0 18px 70px rgba(0,0,0,.55);overflow:hidden}
+  .bhead{display:flex;align-items:flex-start;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line)}
+  .btitle{font-size:15px;font-weight:700}.bsub{font-size:11.5px;color:var(--dim2);margin-top:4px}
+  .bbody{padding:15px 16px;display:flex;flex-direction:column;gap:12px}
+  .bfield{display:flex;flex-direction:column;gap:6px}.bfield>label{font-size:11px;color:var(--dim2);font-weight:650}
+  .bfield select,.bfield textarea{width:100%;box-sizing:border-box;background:var(--panel2);
+    border:1px solid var(--line);border-radius:8px;color:var(--fg);font:inherit;padding:9px 10px}
+  .bfield textarea{min-height:150px;resize:vertical;line-height:1.5}
+  .bnote{font-size:11px;color:var(--dim2);line-height:1.5;background:var(--panel2);
+    border:1px solid var(--line);border-radius:8px;padding:9px 10px}
+  .bfoot{display:flex;gap:7px;justify-content:flex-end;padding:11px 16px;border-top:1px solid var(--line);
+    background:var(--panel2)}
+
   /* ---------------- 연결 그래프 탭 ---------------- */
   #graphwrap{padding:14px 20px 70px}
   .mband{background:var(--panel);border:1px solid var(--line);border-radius:10px;
@@ -686,7 +709,7 @@
 <body>
 <header>
   <div class="row">
-    <h1><span class="dot"></span>Claude Code 세션 런처</h1>
+    <h1><span class="dot"></span>AI 코딩 세션 런처</h1>
     <input id="q" placeholder="프로젝트 · 경로 · 세션 제목 · 대화 내용 검색   ( / 로 포커스 )" autocomplete="off">
     <div class="seg" title="세션을 어디서 열지 - 모든 실행 버튼에 적용됩니다">
       <button id="m-emb" data-mode="embed">대시보드</button>
@@ -745,6 +768,7 @@
     <button class="btn live xs" id="p-goterm" hidden>터미널로 이동</button>
     <button class="btn xs" id="p-focus" hidden>실행 중인 창 띄우기</button>
     <button class="btn xs" id="p-fav">&#9734; 즐겨찾기</button>
+    <button class="btn xs" id="p-bridge">다른 AI에게 전달</button>
     <div class="grow"></div>
     <button class="btn ghost xs" id="p-more">더 불러오기</button>
     <span class="ps" id="p-info"></span>
@@ -753,6 +777,21 @@
 </aside>
 
 <div id="docmodal" hidden></div>
+<div id="bridgemodal" hidden>
+  <div class="bbox" role="dialog" aria-modal="true" aria-labelledby="b-title">
+    <div class="bhead">
+      <div class="grow"><div class="btitle" id="b-title">다른 AI에게 전달</div><div class="bsub" id="b-source"></div></div>
+      <button class="icon" id="b-close" title="닫기">&#10005;</button>
+    </div>
+    <div class="bbody">
+      <div class="bfield"><label for="b-target">받을 세션</label><select id="b-target"></select></div>
+      <div class="bfield"><label for="b-text">전달할 메시지</label>
+        <textarea id="b-text" maxlength="12000" placeholder="예: 이 설계를 검토하고 위험한 부분과 수정안을 정리해 줘."></textarea></div>
+      <div class="bnote">사용자가 직접 보내는 1회성 메시지입니다. 대상이 꺼져 있으면 대시보드에서 자동으로 재개합니다. 작업 중이거나 승인 대기 중이면 끝날 때까지 큐에서 기다리며, 답변은 자동으로 발신 세션에 되돌아오지 않습니다.</div>
+    </div>
+    <div class="bfoot"><button class="btn ghost" id="b-cancel">취소</button><button class="btn primary" id="b-send">전달</button></div>
+  </div>
+</div>
 <div id="toast"></div>
 
 <script src="/vendor/xterm.js"></script>
@@ -791,6 +830,7 @@ let SHOWHIDDEN = localStorage.getItem('ccl.showhidden') === '1';
 let PORDER = JSON.parse(localStorage.getItem('ccl.porder') || '[]');
 function savePorder(){ localStorage.setItem('ccl.porder', JSON.stringify(PORDER)); }
 let openSess = null, openLimit = 40, transTimer = null;
+let bridgeSource = null, bridgePollTimer = null;
 
 /* ---------------------------------------------------------- 유틸 */
 function ago(ms){
@@ -877,6 +917,7 @@ function embeddedBySession(){
 // 출처는 세션 기록의 assistant 라인 message.usage.
 // 같은 응답이 스트리밍·재개로 여러 번 기록되므로 서버에서 id 별 최대값만 남긴다.
 let TOK = null;
+let tokensLoading = false;
 
 function tk(n){
   if (n == null) return '-';
@@ -887,10 +928,13 @@ function tk(n){
 }
 
 async function loadTokens(){
+  if (tokensLoading) return;
+  tokensLoading = true;
   try{
     TOK = await (await fetch('/api/tokens',{cache:'no-store'})).json();
-  }catch{ return; }
-  renderTokens();
+    renderTokens();
+  }catch{}
+  finally{ tokensLoading = false; }
 }
 
 /* ------------------------------------------------ 사용 한도 (/usage 와 같은 정보) */
@@ -900,12 +944,16 @@ async function loadTokens(){
 // 비공식 endpoint 라 안 되면 이 칸만 조용히 숨긴다.
 
 let LIM = null;
+let limitsLoading = false;
 
 async function loadLimits(force){
+  if (limitsLoading) return;
+  limitsLoading = true;
   try {
     LIM = await (await fetch('/api/limits' + (force ? '?force=1' : ''), {cache:'no-store'})).json();
-  } catch { return; }
-  renderLimits();
+    renderLimits();
+  } catch {}
+  finally { limitsLoading = false; }
 }
 
 // "2시간 12분 뒤" 처럼. 지났으면 '곧'.
@@ -946,116 +994,119 @@ function sevClass(p){ return p >= 85 ? 'hot' : (p >= 60 ? 'warn' : ''); }
 
 function renderLimits(){
   const el = $('#lim');
+  if (!LIM){ el.hidden = true; return; }
 
-  // 자격증명이 아예 없으면 이 PC 에선 쓸 수 없는 기능이라 통째로 숨긴다.
-  if (!LIM || (LIM.noCredential)){ el.hidden = true; return; }
+  // 새 API 는 provider 맵이다. 이전 서버와 잠깐 섞여 실행돼도 Claude 표시는 유지한다.
+  const providers = LIM.providers || {claude:LIM};
+  const names = {claude:'Claude', codex:'Codex'};
+  const html = [], lines = ['사용 한도', ''];
+  let visible = 0;
 
-  // 그 밖의 실패는 **숨기지 않고 이유를 보여준다.** 그냥 사라지면
-  // 어디로 갔는지 알 수가 없다 (실제로 그런 일이 있었다).
-  if (!LIM.ok || !LIM.data || !LIM.data.gauges.length){
-    const rl = LIM.reason === 'HTTP 429';
-    el.hidden = false;
-    el.innerHTML = '<div class="lg off" data-limretry="1">'
-      + '<span class="ll">사용 한도</span>'
-      + '<span class="lv">—</span>'
-      + '<span class="lw">' + (rl ? '잠시 후 다시' : '눌러서 다시') + '</span>'
-      + '</div>';
-    el.title = [
-      '사용 한도를 가져오지 못했습니다',
-      '',
-      '사유: ' + (LIM.reason || '알 수 없음'),
-      rl ? '너무 자주 물어봐서 서버가 잠시 막았습니다. 20분 뒤 저절로 다시 시도합니다.' : '',
-      '',
-      '눌러서 바로 다시 시도할 수 있습니다.',
-      '비공식 경로라 안 될 때가 있습니다 - 나머지 표시는 영향받지 않습니다.',
-    ].filter(Boolean).join('\n');
-    return;
+  for (const key of ['claude','codex']){
+    const result = providers[key];
+    if (!result || result.noCredential || result.noData) continue;
+    const name = names[key];
+    const first = visible++ > 0 ? ' provider-start' : '';
+
+    // 한 provider 가 실패해도 다른 provider 의 게이지는 그대로 둔다.
+    if (!result.ok || !result.data || !result.data.gauges.length){
+      const rl = result.reason === 'HTTP 429';
+      html.push('<div class="lg off'+first+'" data-limretry="1">'
+        + '<span class="ll provider-name">'+name+'</span><span class="lv">—</span>'
+        + '<span class="lw">'+(rl ? '잠시 후 다시' : '눌러서 다시')+'</span></div>');
+      lines.push('['+name+'] 가져오지 못함 · '+(result.reason || '알 수 없음'), '');
+      continue;
+    }
+
+    const d = result.data;
+    const main = d.gauges.filter(g => g.label === '5시간 세션' || g.label === '주간');
+    const show = main.length ? main : d.gauges.slice(0, 2);
+    html.push('<div class="lg plan'+first+'"><span class="ll provider-name">'+name+'</span>'
+      + '<span class="lv">'+esc(d.plan || '연결됨')+'</span></div>');
+    for (const g of show){
+      html.push('<div class="lg '+sevClass(g.percent)+'">'
+        + '<span class="ll">'+esc(g.label.replace('5시간 세션','5시간'))
+        + '<span class="lr">'+esc(untilText(g.resetsAt))+'</span></span>'
+        + '<span class="lv">'+g.percent+'%</span>'
+        + '<span class="lbar"><i style="width:'+Math.min(100,Math.max(0,g.percent))+'%"></i></span>'
+        + (g.resetsAt ? '<span class="lw" title="'+esc(stampLocal(g.resetsAt))+' 리셋">'
+          +esc(whenShort(g.resetsAt))+' 리셋</span>' : '')+'</div>');
+    }
+
+    lines.push('['+name+']'+(d.plan ? ' '+d.plan : ''));
+    for (const g of d.gauges){
+      lines.push((g.active ? '● ' : '  ')+g.label+'  '+g.percent+'%');
+      if (g.resetsAt) lines.push('    리셋 '+stampLocal(g.resetsAt)+'  ('+untilText(g.resetsAt)+')');
+    }
+    if (d.extra && d.extra.enabled) lines.push('  추가 사용량 켜짐'
+      +(d.extra.percent != null ? ' · '+d.extra.percent+'%' : ''));
+    if (key === 'codex') lines.push('  출처: 로컬 Codex rollout 기록');
+    lines.push('');
   }
 
-  const d = LIM.data;
+  if (!html.length){ el.hidden = true; return; }
   el.hidden = false;
-
-  // 헤더에는 5시간·주간만. 나머지(모델별 등)는 툴팁에 둔다.
-  const main = d.gauges.filter(g => g.label === '5시간 세션' || g.label === '주간');
-  const show = main.length ? main : d.gauges.slice(0, 2);
-
-  el.innerHTML =
-      (d.plan ? '<div class="lg plan"><span class="ll">플랜</span>'
-              + '<span class="lv">' + esc(d.plan) + '</span></div>' : '')
-    + show.map(g =>
-        '<div class="lg ' + sevClass(g.percent) + '">'
-        + '<span class="ll">' + esc(g.label.replace('5시간 세션','5시간'))
-        +   '<span class="lr">' + esc(untilText(g.resetsAt)) + '</span></span>'
-        + '<span class="lv">' + g.percent + '%</span>'
-        + '<span class="lbar"><i style="width:' + Math.min(100, Math.max(0, g.percent)) + '%"></i></span>'
-        + (g.resetsAt
-            ? '<span class="lw" title="' + esc(stampLocal(g.resetsAt)) + ' 리셋">'
-              + esc(whenShort(g.resetsAt)) + ' 리셋</span>'
-            : '')
-        + '</div>').join('');
-
-  const lines = ['사용 한도 (Claude 서버 기준)', ''];
-  if (d.plan) lines.push('플랜: ' + d.plan, '');
-  for (const g of d.gauges){
-    lines.push((g.active ? '● ' : '  ') + g.label + '  ' + g.percent + '%');
-    if (g.resetsAt) lines.push('    리셋 ' + stampLocal(g.resetsAt) + '  (' + untilText(g.resetsAt) + ')');
-  }
-  if (d.extra && d.extra.enabled){
-    lines.push('', '추가 사용량 켜짐'
-      + (d.extra.percent != null ? ' · ' + d.extra.percent + '%' : ''));
-  }
-  lines.push('', '● 표시가 지금 적용 중인 한도입니다.',
-    '아래 토큰 수치와 다른 값입니다 — 저건 내 기록을 센 것,',
-    '이건 서버가 알려주는 남은 한도입니다.');
+  el.innerHTML = html.join('');
+  lines.push('● 표시가 지금 적용 중인 한도입니다.',
+    '아래 토큰 수치와 다른 값입니다 — 저건 로컬 기록을 센 것,',
+    '이건 각 provider 가 기록한 계정 한도입니다.');
   el.title = lines.join('\n');
 }
 
 function renderTokens(){
   const el = $('#tok');
   if (!TOK || TOK.error){ el.hidden = true; return; }
-  const t = TOK.today, w = TOK.win5h;
+  const providers = TOK.providers || {claude:TOK};
+  const names = {claude:'Claude', codex:'Codex'};
+  const available = ['claude','codex'].filter(k => providers[k] && providers[k].today && providers[k].win5h);
+  if (!available.length){ el.hidden = true; return; }
   el.hidden = false;
-  el.innerHTML =
-      '<div class="tk"><span class="tl">오늘</span><span class="tv">' + tk(t.total) + '</span></div>'
-    + '<div class="tk now"><span class="tl">최근 5시간</span><span class="tv">' + tk(w.total) + '</span></div>'
-    + '<div class="tk sub"><span class="tl">출력 · 입력</span><span class="tv">'
-    +   tk(t.output) + ' · ' + tk(t.input) + '</span></div>';
+  el.innerHTML = available.map((key, ix) => {
+    const p = providers[key], t = p.today, w = p.win5h;
+    return '<div class="tk'+(ix ? ' provider-start' : '')+'"><span class="tl">'+names[key]+' · 오늘</span><span class="tv">'+tk(t.total)+'</span></div>'
+      + '<div class="tk now"><span class="tl">최근 5시간</span><span class="tv">'+tk(w.total)+'</span></div>';
+  }).join('');
 
-  const lines = [
-    '토큰 사용량 (세션 기록의 usage 합계)',
-    '',
-    '[ 오늘 ' + new Date(TOK.dayStart).toLocaleDateString('ko-KR') + ' ]',
-    '  합계        ' + t.total.toLocaleString(),
-    '  입력        ' + t.input.toLocaleString(),
-    '  출력        ' + t.output.toLocaleString() + (t.thinking ? '  (사고 ' + t.thinking.toLocaleString() + ')' : ''),
-    '  캐시 쓰기    ' + t.cacheWrite.toLocaleString()
-      + (t.cache1h || t.cache5m ? '  (1시간 ' + tk(t.cache1h) + ' · 5분 ' + tk(t.cache5m) + ')' : ''),
-    '  캐시 읽기    ' + t.cacheRead.toLocaleString(),
-    '  응답 수      ' + t.calls.toLocaleString(),
-    '',
-    '[ 최근 5시간 ] 합계 ' + w.total.toLocaleString() + ' · 응답 ' + w.calls.toLocaleString(),
-  ];
-  if (TOK.models.length){
-    lines.push('', '[ 모델별 (오늘) ]');
-    for (const m of TOK.models) lines.push('  ' + m.model.padEnd(20) + tk(m.total) + '  (' + m.calls + '회)');
-  }
-  if (TOK.sessions.length){
-    lines.push('', '[ 프로젝트별 (오늘) ]');
-    for (const sx of TOK.sessions.slice(0,6)){
-      const nm = String(sx.cwd || '').split(/[\\/]/).filter(Boolean).pop() || sx.sessionId.slice(0,8);
-      lines.push('  ' + nm.padEnd(24) + tk(sx.total));
+  const lines = ['토큰 사용량 (로컬 세션 기록 합계)', ''];
+  for (const key of available){
+    const p = providers[key], t = p.today, w = p.win5h;
+    lines.push('['+names[key]+' · 오늘 '+new Date(p.dayStart).toLocaleDateString('ko-KR')+']',
+      '  합계        '+t.total.toLocaleString(),
+      '  입력        '+t.input.toLocaleString(),
+      '  출력        '+t.output.toLocaleString()+(t.thinking ? '  (사고 '+t.thinking.toLocaleString()+')' : ''),
+      '  캐시 쓰기    '+t.cacheWrite.toLocaleString()
+        +(t.cache1h || t.cache5m ? '  (1시간 '+tk(t.cache1h)+' · 5분 '+tk(t.cache5m)+')' : ''),
+      '  캐시 읽기    '+t.cacheRead.toLocaleString(),
+      '  응답 수      '+t.calls.toLocaleString(),
+      '  최근 5시간  '+w.total.toLocaleString()+' · 응답 '+w.calls.toLocaleString());
+    if (p.models && p.models.length){
+      lines.push('  모델별');
+      for (const m of p.models) lines.push('    '+m.model.padEnd(18)+tk(m.total)+'  ('+m.calls+'회)');
     }
+    if (p.sessions && p.sessions.length){
+      lines.push('  프로젝트별');
+      for (const sx of p.sessions.slice(0,6)){
+        const nm = String(sx.cwd || '').split(/[\\/]/).filter(Boolean).pop()
+          || String(sx.sessionId || '').slice(0,8) || '-';
+        lines.push('    '+nm.padEnd(22)+tk(sx.total));
+      }
+    }
+    lines.push('  스캔: 파일 '+p.scanned.files+'개 · '+p.scanned.ms+'ms', '');
   }
-  lines.push('', '캐시 읽기가 대부분인 것은 정상입니다 (대화가 길어질수록 늘어납니다).',
-             '스캔: 파일 ' + TOK.scanned.files + '개 · ' + TOK.scanned.ms + 'ms');
+  lines.push('캐시 읽기가 대부분인 것은 정상입니다 (대화가 길어질수록 늘어납니다).');
   el.title = lines.join('\n');
 }
 
 /* ---------------------------------------------------------- 데이터 */
+let projectsLoading = false, termsLoading = false, liveLoading = false;
 async function load(){
-  const j = await (await fetch('/api/projects',{cache:'no-store'})).json();
-  DATA = j.projects; ENV = j.env;
-  await loadTerms();
+  if (projectsLoading) return;
+  projectsLoading = true;
+  try {
+    const j = await (await fetch('/api/projects',{cache:'no-store'})).json();
+    DATA = j.projects; ENV = j.env;
+    await loadTerms();
+  } finally { projectsLoading = false; }
 }
 
 // 토큰 사용량은 Claude 쪽이 세션 파일을 통째로 읽어야 해서 비싸다.
@@ -1068,16 +1119,21 @@ async function loadUsage(){
 }
 
 async function loadTerms(){
+  if (termsLoading) return;
+  termsLoading = true;
   try{
     const j = await (await fetch('/api/terms',{cache:'no-store'})).json();
     TERMS = j.terms || [];
     CC.term.sync(TERMS);
   }catch(e){}
+  finally{ termsLoading = false; }
   renderCounts(); renderTermBar(); render();
 }
 
 // 실행 상태만 가볍게 갱신
 async function pollLive(){
+  if (liveLoading) return;
+  liveLoading = true;
   try{
     const j = await (await fetch('/api/live',{cache:'no-store'})).json();
     let changed = false;
@@ -1100,6 +1156,7 @@ async function pollLive(){
       if (openSess) syncPanelHeader();
     }
   }catch(e){}
+  finally{ liveLoading = false; }
 }
 
 function allSessions(){
@@ -1205,6 +1262,7 @@ function sessionRow(p, s, emb){
     + '<div class="sacts">'
     +   liveBtn(p, s, emb)
     +   '<button class="btn xs" data-act="fork" data-provider="'+esc(s.provider)+'" data-cwd="'+esc(p.cwd)+'" data-sid="'+esc(s.id)+'" data-title="'+esc(s.title||'')+'" title="복제해서 새 세션 ID로 시작">포크</button>'
+    +   '<button class="btn ghost xs" data-bridge="'+vk+'" title="이 세션에서 반대쪽 AI 세션으로 메시지 전달">전달</button>'
     +   '<button class="btn ghost xs" data-view="'+vk+'">대화 보기</button>'
     + '</div></div>';
 }
@@ -1432,6 +1490,7 @@ function sessionCard(s, emb){
     + '<div class="cfoot">'
     +   liveBtn(p, s, emb)
     +   '<button class="btn xs" data-act="fork" data-provider="'+esc(s.provider)+'" data-cwd="'+esc(p.cwd)+'" data-sid="'+esc(s.id)+'" data-title="'+esc(s.title||'')+'">포크</button>'
+    +   '<button class="btn ghost xs" data-bridge="'+vk+'">다른 AI에게 전달</button>'
     +   '<button class="btn ghost xs" data-view="'+vk+'">대화 보기</button>'
     +   '<div class="grow"></div>'
     +   '<button class="btn ghost xs" data-open="folder" data-cwd="'+esc(p.cwd)+'">📁</button>'
@@ -1750,6 +1809,105 @@ function closePanel(){
   render();
 }
 
+/* ------------------------------------------------ Claude ↔ Codex 메시지 브리지 */
+function closeBridge(){
+  bridgeSource = null;
+  $('#bridgemodal').hidden = true;
+  $('#b-text').value = '';
+}
+
+function openBridge(token){
+  const parts = String(token || '').split('|');
+  const source = findSession(parts[0], parts[1], parts[2]);
+  if (!source){ toast('발신 세션을 찾지 못했습니다', true); return; }
+  bridgeSource = source;
+  const wanted = source.provider === 'codex' ? 'claude' : 'codex';
+  const emb = embeddedBySession();
+  const candidates = allSessions().filter(s => s.provider === wanted)
+    .sort((a,b) => ((b.project.key === source.project.key ? 1 : 0)
+                  - (a.project.key === source.project.key ? 1 : 0)) || b.mtime - a.mtime);
+  const groups = {same:[], other:[]};
+  for (const s of candidates){
+    const e = emb.get(s.id);
+    const external = !!s.live && !e;
+    const state = external ? '외부 창 실행 중 · 전달 불가'
+      : (e ? (s.live && statusLabel(s.live) || '대시보드 대기 중') : '꺼짐 · 자동 재개');
+    const option = '<option value="'+esc(s.provider+'|'+s.id)+'"'+(external?' disabled':'')+'>'
+      +esc(s.project.name+' · '+(s.title||'(제목 없음)')+' ['+state+']')+'</option>';
+    groups[s.project.key === source.project.key ? 'same' : 'other'].push(option);
+  }
+  const select = $('#b-target');
+  select.innerHTML = (groups.same.length ? '<optgroup label="같은 프로젝트">'+groups.same.join('')+'</optgroup>' : '')
+    +(groups.other.length ? '<optgroup label="다른 프로젝트">'+groups.other.join('')+'</optgroup>' : '');
+  $('#b-source').textContent = (source.provider === 'codex' ? 'Codex' : 'Claude')+' · '
+    +source.project.name+' · '+(source.title || '(제목 없음)');
+  $('#b-send').disabled = !select.querySelector('option:not(:disabled)');
+  $('#bridgemodal').hidden = false;
+  setTimeout(function(){ $('#b-text').focus(); }, 0);
+}
+
+function watchBridge(id, tries){
+  clearTimeout(bridgePollTimer);
+  bridgePollTimer = setTimeout(async function(){
+    try{
+      const r = await fetch('/api/bridge/status?id='+encodeURIComponent(id), {cache:'no-store'});
+      const j = await r.json();
+      if (j.message && j.message.status === 'delivered'){
+        toast('대상 '+(j.message.target.provider === 'codex' ? 'Codex' : 'Claude')+' 세션에 전달했습니다');
+        await loadTerms(); return;
+      }
+      if (j.message && j.message.status === 'failed'){
+        toast('전달 실패: '+(j.message.error || '알 수 없음'), true); return;
+      }
+    }catch(e){}
+    if (tries > 0) watchBridge(id, tries - 1);
+  }, 1000);
+}
+
+async function sendBridge(){
+  if (!bridgeSource) return;
+  const text = $('#b-text').value.trim();
+  if (!text){ toast('전달할 메시지를 입력해 주세요', true); $('#b-text').focus(); return; }
+  const targetParts = $('#b-target').value.split('|');
+  if (targetParts.length < 2){ toast('받을 세션을 골라 주세요', true); return; }
+  const button = $('#b-send');
+  button.disabled = true; button.textContent = '전달 중…';
+  try{
+    const j = await post('/api/bridge/send', {
+      sourceProvider:bridgeSource.provider, sourceId:bridgeSource.id,
+      targetProvider:targetParts[0], targetId:targetParts[1], text:text,
+    });
+    closeBridge();
+    if (j.message.status === 'delivered') toast('대상 세션에 전달했습니다');
+    else {
+      toast(j.message.launched ? '대상 세션을 재개했습니다 · 준비되면 전달합니다'
+                               : '대상이 작업 중입니다 · 끝나면 전달합니다');
+      watchBridge(j.message.id, 600);
+    }
+    await loadTerms();
+  }catch(err){ toast('전달 실패: '+err.message, true); }
+  finally { button.disabled = false; button.textContent = '전달'; }
+}
+
+async function watchHandoff(id, tries){
+  tries = tries == null ? 600 : tries;
+  if (tries <= 0){ toast('AI 전환 대기 시간이 초과되었습니다', true); return; }
+  try{
+    const r = await fetch('/api/handoff/status?id='+encodeURIComponent(id), {cache:'no-store'});
+    const j = await r.json();
+    if (!r.ok || j.error) throw new Error(j.error || '전환 상태를 확인하지 못했습니다');
+    const job = j.job;
+    if (job.status === 'failed'){ toast('AI 전환 실패: '+job.error, true); return; }
+    if (job.status === 'sent'){
+      await loadTerms();
+      if (job.targetTermId){ CC.term.show(job.targetTermId); setTab('term'); renderTermBar(); }
+      toast((job.targetProvider === 'codex' ? 'Codex' : 'Claude Code')+'로 인수인계를 전달했습니다');
+      return;
+    }
+  }catch(err){ toast('AI 전환 상태 확인 실패: '+err.message, true); return; }
+  setTimeout(function(){ watchHandoff(id, tries-1); }, 1000);
+}
+
 /* ---------------------------------------------------------- 탭 */
 function setTab(t){
   TAB = t; localStorage.setItem('ccl.tab', TAB);
@@ -1829,12 +1987,19 @@ document.addEventListener('click', async function(e){
   const t = e.target.closest('[data-tab],[data-mode],[data-expand],[data-pin],[data-fav],[data-open],'
     + '[data-act],[data-focus],[data-view],[data-goterm],[data-closeterm],[data-lay],[data-ori],[data-solo],'
     + '[data-reloadterm],[data-restartterm],[data-resetsize],[data-movepane],'
+    + '[data-termfav],[data-termctx],[data-termhandoff],'
     + '[data-fold],[data-listview],[data-sort],[data-pick],'
     + '[data-hide],[data-hideproj],[data-delsess],[data-showhidden],[data-unhideall],'
     + '[data-mdpick],[data-mdreload],'
-    + '[data-limretry],'
+    + '[data-limretry],[data-bridge],'
     + '[data-openfile],[data-hookinstall],[data-hookuninstall],#t-new,.m.thinking');
   if (!t) return;
+
+  if (t.dataset.bridge){
+    e.stopPropagation();
+    openBridge(t.dataset.bridge);
+    return;
+  }
 
   // 실시간 관측 훅 설치 / 제거 (~/.claude/settings.json 또는 ~/.codex/hooks.json 을 고친다)
   if (t.dataset.hookinstall){
@@ -2008,6 +2173,49 @@ document.addEventListener('click', async function(e){
   if (t.dataset.resetsize){
     CC.term.resetSizes(); toast('패인 크기를 균등하게 되돌렸습니다'); return;
   }
+  if (t.dataset.termfav){
+    e.stopPropagation();
+    try{
+      const j = await post('/api/term/fav', {id:t.dataset.termfav});
+      CC.term.patch(t.dataset.termfav, {fav:j.fav});
+      await load();
+      toast(j.fav ? '즐겨찾기에 추가했습니다' : '즐겨찾기에서 제거했습니다');
+    }catch(err){ toast(err.message, true); }
+    return;
+  }
+  if (t.dataset.termctx){
+    e.stopPropagation();
+    const id = t.dataset.termid;
+    const action = t.dataset.termctx;
+    const warning = action === 'compact'
+      ? '현재 세션의 컨텍스트를 압축할까요?\n\nAI가 기존 대화를 요약해 컨텍스트 공간을 확보합니다. 압축 중에는 다른 입력을 보내지 마세요.'
+      : '현재 대화 컨텍스트를 초기화할까요?\n\n기존 세션 기록은 남지만, 같은 터미널에서 빈 새 세션이 시작됩니다.';
+    if (!confirm(warning + '\n\n계속할까요?')) return;
+    t.disabled = true;
+    try{
+      await post('/api/term/context', {id:id, action:action});
+      if (action === 'clear') CC.term.patch(id, {sessionId:null, fav:false});
+      toast(action === 'compact' ? '컨텍스트 압축을 요청했습니다' : '빈 컨텍스트로 새 세션을 시작했습니다');
+      await loadTerms();
+    }catch(err){ toast(err.message, true); }
+    t.disabled = false;
+    return;
+  }
+  if (t.dataset.termhandoff){
+    e.stopPropagation();
+    const id = t.dataset.termhandoff;
+    const inf = TERMS.find(x => x.id === id);
+    const target = inf && inf.provider === 'codex' ? 'Claude Code' : 'Codex';
+    if (!confirm('AI 세션을 전환할까요?\n\n현재 AI가 작업 내용을 인수인계용으로 요약한 뒤 '+target+' 새 세션으로 전달합니다. 원본 세션은 종료하지 않습니다.\n\n계속할까요?')) return;
+    t.disabled = true;
+    try{
+      const j = await post('/api/term/handoff', {id:id});
+      toast('인수인계 요약을 작성 중입니다. 완료되면 '+target+' 터미널로 이동합니다');
+      watchHandoff(j.job.id);
+    }catch(err){ toast('AI 전환 실패: '+err.message, true); }
+    t.disabled = false;
+    return;
+  }
   if (t.dataset.reloadterm){
     e.stopPropagation();
     CC.term.reload(t.dataset.reloadterm);
@@ -2106,6 +2314,14 @@ $('#p-fav').onclick = async function(){
     renderCounts(); syncPanelHeader(); render();
   }catch(err){ toast(err.message,true); }
 };
+$('#p-bridge').onclick = function(){
+  if (!openSess) return;
+  openBridge(openSess.provider+'|'+(openSess.slug || '')+'|'+openSess.id);
+};
+$('#b-close').onclick = closeBridge;
+$('#b-cancel').onclick = closeBridge;
+$('#b-send').onclick = sendBridge;
+$('#bridgemodal').addEventListener('click', function(e){ if (e.target === this) closeBridge(); });
 $('#p-resume').onclick = async function(){
   if (!openSess) return;
   try{ await launch('resume', openSess.project.cwd, openSess.id, openSess.title, openSess.provider); closePanel(); }
@@ -2135,6 +2351,7 @@ $('#q').addEventListener('keydown', function(e){
 // 터미널에 포커스가 있을 때는 전역 단축키가 키를 가로채지 않게 한다
 document.addEventListener('keydown', function(e){
   if (e.target.closest && e.target.closest('#termwrap')) return;
+  if (e.key === 'Escape' && !$('#bridgemodal').hidden){ closeBridge(); return; }
   if (e.key === '/' && document.activeElement !== $('#q')){ e.preventDefault(); $('#q').focus(); }
   if (e.key === 'Escape' && openSess) closePanel();
 });

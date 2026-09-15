@@ -3,7 +3,7 @@
 //
 // Codex 는 type:"http" 훅을 지원하지 않는다 (핸들러는 command 와 mcp_tool 뿐).
 // 그래서 Claude 쪽처럼 프로세스 없이 갈 수가 없다. hooks.json 에서
-// "async": true 로 걸어 이 프로세스가 턴을 막지 않게 한다.
+// 훅 자체는 빠르게 끝나며, 서버가 응답하지 않아도 하드 데드라인 뒤 정상 종료한다.
 //
 // 무슨 일이 있어도 exit 0 이어야 한다. 0 이 아니면 Codex 가 턴을 막는다.
 'use strict';
@@ -30,6 +30,20 @@ const STATUS = {
   Stop: 'idle',
   Interrupt: 'idle',
 };
+
+const EVENT_NAMES = {
+  session_start: 'SessionStart', session_end: 'SessionEnd',
+  user_prompt_submit: 'UserPromptSubmit', pre_tool_use: 'PreToolUse',
+  post_tool_use: 'PostToolUse', permission_request: 'PermissionRequest',
+  subagent_start: 'SubagentStart', subagent_stop: 'SubagentStop',
+  stop: 'Stop', interrupt: 'Interrupt',
+  pre_compact: 'PreCompact', post_compact: 'PostCompact',
+};
+
+function normalizeEventName(name) {
+  const raw = String(name || '');
+  return EVENT_NAMES[raw] || raw;
+}
 
 function readStdin() {
   try { return fs.readFileSync(0, 'utf8'); } catch { return ''; }
@@ -96,5 +110,6 @@ try { body = JSON.parse(readStdin()); } catch { process.exit(0); }
 if (!body || typeof body !== 'object') process.exit(0);
 
 body.provider = 'codex';
+body.hook_event_name = normalizeEventName(body.hook_event_name);
 updateLive(body);
 post(body, () => process.exit(0));

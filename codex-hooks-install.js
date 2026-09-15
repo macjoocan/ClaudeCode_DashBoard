@@ -18,7 +18,8 @@ const SCRIPT = path.join(__dirname, 'codex-hook.js');
 const DEFAULT_URL = 'http://127.0.0.1:7788/api/hook';
 const MARK = 'cc-launcher';   // 우리 항목만 골라내는 표시. isOurs() 가 이 값과 스크립트 경로를 함께 본다.
 
-// SessionEnd 는 항상 동기이고 타임아웃이 1~3초다. 나머지는 async 로 뺀다.
+// Codex 사용자 훅은 동기 command 형식이다. 대시보드가 꺼져 있어도 세션을 오래
+// 붙잡지 않도록 종료 이벤트는 더 짧게, 나머지도 짧은 timeout 으로 제한한다.
 const EVENTS = ['SessionStart', 'SessionEnd', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse',
                 'PermissionRequest', 'SubagentStart', 'SubagentStop', 'Stop', 'Interrupt',
                 'PreCompact', 'PostCompact'];
@@ -43,11 +44,14 @@ function resolveUrl(url) {
 function entryFor(event, url) {
   const h = {
     type: 'command',
-    command: `"${process.execPath}" "${SCRIPT}" "${url}"`,
+    // Current Codex user hooks execute `command` as a shell command. The
+    // plugin-only `args` field is accepted while loading user hooks but is not
+    // appended at execution time. Keep `node` PATH-resolved so Windows does
+    // not hit cmd.exe's leading-quoted-executable parsing edge case.
+    command: `node "${SCRIPT}" "${url}"`,
     statusMessage: MARK,
   };
-  if (event === 'SessionEnd' || event === 'Interrupt') h.timeout = 3;
-  else { h.async = true; h.timeout = 30; }
+  h.timeout = event === 'SessionEnd' || event === 'Interrupt' ? 3 : 10;
   return { matcher: '*', hooks: [h] };
 }
 
@@ -56,8 +60,14 @@ function entryFor(event, url) {
 // "codex-hook.js" 라는 글자를 포함하기만 해도(예: 그 파일을 감싸는 자기만의
 // 래퍼 스크립트) 우리 것으로 오인해 install()/uninstall() 이 지워버릴 수 있다.
 function isOurs(entry) {
-  return (entry?.hooks || []).some(h =>
-    String(h?.command || '').includes('codex-hook.js') && h?.statusMessage === MARK);
+  return (entry?.hooks || []).some(h => {
+    const command = String(h?.command || '');
+    const args = Array.isArray(h?.args) ? h.args.map(String) : [];
+    // Also recognize the short-lived command+args form so install() upgrades
+    // it and uninstall() can remove it.
+    return h?.statusMessage === MARK
+      && (command.includes('codex-hook.js') || args.some(a => a.includes('codex-hook.js')));
+  });
 }
 
 // hooks.json 최상위는 반드시 순수 객체여야 한다. 배열은 typeof 가 'object' 라
