@@ -270,11 +270,37 @@ test('isInsideSessions 은 .. 로 상위를 탈출하는 경로를 막는다', (
 test('liveMap 은 상태 파일을 읽는다', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-live-'));
   fs.writeFileSync(path.join(dir, 'aaa-111.json'), JSON.stringify({
-    sessionId: 'aaa-111', status: 'busy', cwd: 'D:\\x', pid: 123, at: Date.now() }), 'utf8');
+    sessionId: 'aaa-111', status: 'busy', cwd: 'D:\\x', pid: process.pid, at: Date.now() }), 'utf8');
   const m = codex.liveMap(dir);
   assert.equal(m.get('aaa-111').status, 'busy');
   // /api/live 가 Claude 상태와 한 맵에 담으므로 출처가 실려 있어야 한다
   assert.equal(m.get('aaa-111').provider, 'codex');
+});
+
+// 강제 종료된 CLI 는 상태 파일을 못 지운다. 나이만 보면 하루 내내 '실행 중' 으로 남는다.
+test('liveMap 은 PID 가 죽은 파일을 버린다', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-live-'));
+  fs.writeFileSync(path.join(dir, 'dead.json'), JSON.stringify({
+    sessionId: 'dead', status: 'busy', pid: 998877, at: Date.now() }), 'utf8');
+  assert.equal(codex.liveMap(dir).size, 0);
+});
+
+// pid 를 안 남긴 옛 파일까지 버리면 멀쩡한 세션이 목록에서 사라진다.
+test('liveMap 은 pid 없는 파일은 그대로 살린다', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-live-'));
+  fs.writeFileSync(path.join(dir, 'nopid.json'), JSON.stringify({
+    sessionId: 'nopid', status: 'idle', at: Date.now() }), 'utf8');
+  assert.ok(codex.liveMap(dir).has('nopid'));
+});
+
+test('dropLive 는 상태 파일을 지우고 경로를 벗어나는 id 는 막는다', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-live-'));
+  const f = path.join(dir, 'gone.json');
+  fs.writeFileSync(f, JSON.stringify({ sessionId: 'gone', at: Date.now() }), 'utf8');
+  assert.equal(codex.dropLive('../escape', dir), false);
+  assert.equal(codex.dropLive('gone', dir), true);
+  assert.equal(fs.existsSync(f), false);
+  assert.equal(codex.dropLive('gone', dir), false);   // 두 번째는 지울 게 없다
 });
 
 test('liveMap 은 오래된 파일을 버린다', () => {

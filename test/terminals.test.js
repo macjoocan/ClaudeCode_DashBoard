@@ -10,7 +10,8 @@ const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-termhome-'));
 fs.mkdirSync(path.join(HOME, '.cc-launcher-live'), { recursive: true });
 process.env.CODEX_HOME = HOME;
 
-const CODEX_PID = 998877;
+// 살아있는 PID 여야 한다 - liveMap 은 죽은 PID 의 상태 파일을 버린다.
+const CODEX_PID = process.pid;
 // terminals.js 가 이 디렉터리를 1초 메모하므로 첫 조회 전에 써 둔다.
 fs.writeFileSync(path.join(HOME, '.cc-launcher-live', 'cx-1.json'), JSON.stringify({
   sessionId: 'cx-1', status: 'waiting', cwd: 'D:\\tmp', pid: CODEX_PID, at: Date.now() }), 'utf8');

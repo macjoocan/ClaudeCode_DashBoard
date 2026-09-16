@@ -37,6 +37,31 @@ const STATE_DB = path.join(CODEX_HOME, 'state_5.sqlite');
 const LIVE_DIR = path.join(CODEX_HOME, '.cc-launcher-live');
 const LIVE_MAX_AGE = 24 * 60 * 60 * 1000;   // 하루 넘은 상태 파일은 죽은 것으로 본다
 
+// 강제 종료된 CLI 는 상태 파일을 지울 틈이 없다. 나이만 보면 죽은 세션이 하루 내내
+// '실행 중' 으로 남는다 - 대시보드를 강제 종료했다 다시 켜면 딱 그 꼴이 된다.
+// Claude 쪽(liveSessions)처럼 PID 가 실제로 살아 있는지 확인한다.
+function procAlive(pid) {
+  const n = Number(pid);
+  if (!Number.isFinite(n) || n <= 0) return true;   // pid 를 안 남긴 옛 파일은 판정하지 않는다
+  try { process.kill(n, 0); return true; }
+  catch (e) { return e.code === 'EPERM'; }          // 권한이 없을 뿐 살아는 있다
+}
+
+// 상태 파일 경로. 파일 이름이 곧 세션 ID 라 경로를 벗어나지 않게 검사한다.
+const SAFE_SESSION_ID = /^[A-Za-z0-9._-]+$/;
+function livePath(sessionId, dir) {
+  const id = String(sessionId == null ? '' : sessionId);
+  if (!SAFE_SESSION_ID.test(id)) return null;
+  return path.join(dir || LIVE_DIR, id + '.json');
+}
+
+// 죽은 세션의 상태 파일을 치운다. 종료 처리 뒤 목록에서 바로 빠지게 하는 용도.
+function dropLive(sessionId, dir) {
+  const f = livePath(sessionId, dir);
+  if (!f) return false;
+  try { fs.unlinkSync(f); return true; } catch { return false; }
+}
+
 // Codex 에는 ~/.claude/sessions/<pid>.json 대응물이 없다.
 // 우리 훅(codex-hook.js)이 쓴 파일을 읽는다.
 function liveMap(dir) {
@@ -51,6 +76,7 @@ function liveMap(dir) {
     if (!j || !j.sessionId) continue;
     const at = Number(j.at || 0);
     if (!Number.isFinite(at) || now - at > LIVE_MAX_AGE) continue;
+    if (!procAlive(j.pid)) continue;
     out.set(String(j.sessionId), {
       provider: 'codex',   // /api/live 가 Claude 상태와 한 맵에 섞으므로 출처를 남긴다
       status: j.status === 'busy' || j.status === 'waiting' ? j.status : 'idle',
@@ -336,6 +362,6 @@ function doctor(cb, bin) {
 
 module.exports = {
   normalizeCwd, safeTitle, readThreads, TITLE_MAX, CODEX_HOME, STATE_DB, sessions, stamp,
-  codexArgs, findCodexBin, parseRollout, transcript, isInsideSessions, liveMap, LIVE_DIR,
+  codexArgs, findCodexBin, parseRollout, transcript, isInsideSessions, liveMap, dropLive, LIVE_DIR,
   parseDoctor, doctor,
 };

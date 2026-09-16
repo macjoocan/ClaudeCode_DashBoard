@@ -493,6 +493,11 @@
       + '<button class="pbtn fav ' + (i.fav ? 'on' : '') + '" data-termfav="' + id + '"'
       +   (!i.sessionId ? ' disabled' : '')
       +   ' title="이 세션 즐겨찾기">' + (i.fav ? '★' : '☆') + '</button>'
+      + '<button class="pbtn ctx" data-termcopyid="' + id + '"'
+      +   (!i.sessionId ? ' disabled' : '')
+      +   ' title="' + (i.sessionId
+            ? '세션 ID 복사 · ' + escText(i.sessionId)
+            : '세션 ID 는 첫 대화가 시작돼야 생깁니다') + '">ID</button>'
       + '<button class="pbtn ctx" data-termctx="compact" data-termid="' + id + '"'
       +   (!i.alive ? ' disabled' : '') + ' title="현재 대화를 요약 압축해 컨텍스트 공간 확보">압축</button>'
       + '<button class="pbtn ctx warn" data-termctx="clear" data-termid="' + id + '"'
@@ -539,6 +544,16 @@
 
   function note(msg, isErr) {
     if (CC.toast) CC.toast(msg, isErr);
+  }
+
+  // 세션 ID 를 클립보드로. --resume 에 그대로 붙여 쓸 수 있는 값이다.
+  function copyId(id) {
+    var v = views.get(id);
+    var sid = v && v.info ? v.info.sessionId : null;
+    if (!sid) { note('아직 세션 ID 가 없습니다 - 첫 대화 뒤에 생깁니다', true); return; }
+    writeClipboard(sid).then(function (ok) {
+      note(ok ? '세션 ID 를 복사했습니다 · ' + sid : '복사 실패 - ID: ' + sid, !ok);
+    });
   }
 
   function writeClipboard(text) {
@@ -1043,7 +1058,7 @@
     stop: stop, close: close, drop: drop,
     reload: reload, restart: restart,
     moveTo: moveTo, nudge: nudge, resetSizes: resetSizes,
-    list: listLocal, patch: patch,
+    list: listLocal, patch: patch, copyId: copyId,
     // 탭 바가 패인 순서를 따라가게 한다
     orderOf: function (id) { var i = order.indexOf(id); return i < 0 ? 9999 : i; },
     // 디버깅·테스트용: 특정 터미널의 xterm 인스턴스

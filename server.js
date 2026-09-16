@@ -38,7 +38,7 @@ const HOOK_URL = `http://${'127.0.0.1'}:${Number(process.env.CC_LAUNCHER_PORT ||
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CC_LAUNCHER_PORT || 7788);
-const API_VERSION = 2; // launchers use this to distinguish a stale in-memory server
+const API_VERSION = 3; // launchers use this to distinguish a stale in-memory server
 const CLAUDE_HOME = path.join(os.homedir(), '.claude');
 const PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects');
 const LIVE_DIR = path.join(CLAUDE_HOME, 'sessions'); // <pid>.json = 살아있는 세션 상태
@@ -226,6 +226,13 @@ function refreshClaudePids() {
       for (const m of stdout.matchAll(/"claude\.exe","(\d+)"/g)) set.add(Number(m[1]));
       claudePidSet = set;
     });
+}
+
+// 끊은 PID 는 캐시에서도 바로 뺀다. tasklist 캐시는 20초짜리라
+// 그냥 두면 이미 죽인 세션이 20초 동안 '실행 중' 으로 남는다.
+function forgetClaudePid(pid) {
+  if (claudePidSet) claudePidSet.delete(Number(pid));
+  claudePidCheckedAt = 0;
 }
 
 function pidAlive(pid) {
@@ -532,6 +539,27 @@ function focusWindow(pid) {
         const failed = out.match(/^FAILED (\S+)/);
         if (failed) return reject(new Error(`${failed[1]} 창을 찾았지만 전면으로 올리지 못했습니다`));
         reject(new Error(out || String(stderr || (err && err.message) || '').trim() || '창 포커스 실패'));
+      });
+  });
+}
+
+// 실행 중인 CLI 프로세스를 끊는다.
+//
+// 대시보드를 강제 종료하면 내장 터미널이 띄운 claude/codex 프로세스가 고아로 남는다.
+// 창도 없고 붙을 터미널 패인도 없어서, 다시 켜면 '실행 중' 으로만 보이고 손댈 방법이
+// 없다. taskkill /T 로 자식까지 함께 끊는다 - CLI 가 띄운 MCP 서버·서브프로세스가
+// 남으면 포트를 물고 있는다. 콘솔 앱이라 WM_CLOSE 가 안 먹으므로 /F 가 필요하다.
+// 기록(jsonl)은 그때그때 append 되므로 끊어도 대화 내용은 남는다.
+function killTree(pid) {
+  return new Promise((resolve, reject) => {
+    if (!Number.isInteger(pid) || pid <= 0) return reject(new Error('잘못된 PID'));
+    execFile('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { timeout: 8000 },
+      (err, stdout, stderr) => {
+        if (!err) return resolve(true);
+        // 이미 사라진 프로세스는 실패가 아니다. 어느 쪽이든 결과는 '안 돌고 있음' 이다.
+        const msg = (String(stdout || '') + ' ' + String(stderr || '')).trim();
+        if (/not found|찾을 수 없|없습니다|없는 프로세스/i.test(msg)) return resolve(false);
+        reject(new Error(msg || String((err && err.message) || '') || '프로세스를 종료하지 못했습니다'));
       });
   });
 }
@@ -1021,6 +1049,43 @@ const server = http.createServer(async (req, res) => {
       }
       // scan() 은 매번 디렉터리를 다시 읽으므로 삭제분은 저절로 빠진다
       return json(res, 200, { ok: true, deleted: done.length, done, failed });
+    }
+
+    // 실행 중인 세션 끊기. 고아로 남은 CLI 프로세스를 목록에서 직접 종료한다.
+    if (url.pathname === '/api/session/kill' && req.method === 'POST') {
+      const b = await readBody(req);
+      const id = String(b.id || '');
+      if (!SAFE_ID.test(id)) throw new Error('잘못된 세션 지정');
+      const isCodex = b.provider === 'codex';
+
+      // PID 는 클라이언트 말을 믿지 않고 라이브 상태에서 다시 찾는다.
+      // 아무 PID 나 받아서 죽이면 대시보드가 임의 프로세스 킬러가 된다.
+      const live = isCodex ? codex.liveMap().get(id) : liveSessions().get(id);
+
+      // 이 대시보드가 띄운 터미널이면 패인째로 정리한다. 프로세스만 끊으면
+      // 죽은 화면이 탭에 남는다.
+      const emb = terminals.list().find(t => t.alive && t.sessionId === id);
+      if (emb) terminals.close(emb.id);
+
+      if (!live) {
+        // Codex 는 훅이 쓴 상태 파일이 남아 있을 수 있다. 치워야 목록에서 빠진다.
+        const cleaned = isCodex ? codex.dropLive(id) : false;
+        return json(res, 200, {
+          ok: true, killed: false, closedTerminal: !!emb, cleaned,
+          message: emb ? '대시보드 터미널을 닫았습니다'
+                       : '이미 종료된 세션입니다' + (cleaned ? ' · 목록에서 정리했습니다' : ''),
+        });
+      }
+
+      let killed = false;
+      if (live.pid) killed = await killTree(Number(live.pid));
+      if (!isCodex && live.pid) forgetClaudePid(live.pid);
+      const cleaned = isCodex ? codex.dropLive(id) : false;
+      return json(res, 200, {
+        ok: true, killed, closedTerminal: !!emb, cleaned, pid: live.pid || null,
+        message: killed ? '세션을 종료했습니다 (PID ' + live.pid + ')'
+                        : '이미 종료된 세션입니다 · 목록에서 정리했습니다',
+      });
     }
 
     if (url.pathname === '/api/fav' && req.method === 'POST') {
