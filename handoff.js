@@ -69,7 +69,9 @@ function createHandoff(options) {
         // 훅이 실제 idle을 알려준 경우만 즉시 완료로 본다. 상태가 null이면
         // 스트리밍 중간 조각을 요약 완성본으로 오인하지 않도록 출력 정적 시간을 기다린다.
         const safe = info.status === 'idle';
-        const quiet = Date.now() - Number(source.lastAt || 0) >= quietMs;
+        // lastAt 이 아니라 lastRealAt 을 본다 - Codex TUI 는 대기 중에도 스피너를
+        // 계속 그려서 lastAt 으로는 영영 조용해지지 않는다.
+        const quiet = Date.now() - Number(source.lastRealAt || source.lastAt || 0) >= quietMs;
         if (safe || quiet) return String(latest.text || '').trim();
       }
     }
@@ -81,7 +83,7 @@ function createHandoff(options) {
     while (!closed && Date.now() < deadline) {
       await sleep(pollMs);
       if (target.exitCode != null) throw new Error('전환할 AI 세션이 시작 중 종료되었습니다');
-      if (target.buf && Date.now() - Number(target.lastAt || 0) >= quietMs) return;
+      if (target.buf && Date.now() - Number(target.lastRealAt || target.lastAt || 0) >= quietMs) return;
     }
     if (closed) throw new Error('대시보드가 종료되었습니다');
     // 일부 CLI/테마는 준비 완료 뒤에도 커서를 계속 갱신한다. 제한 시간이 지나면
@@ -118,7 +120,7 @@ function createHandoff(options) {
     if (info.status === 'busy' || info.status === 'waiting') {
       throw new Error('작업 또는 승인 대기가 끝난 뒤 전환해 주세요');
     }
-    if (!info.status && Date.now() - Number(source.lastAt || 0) < quietMs) {
+    if (!info.status && Date.now() - Number(source.lastRealAt || source.lastAt || 0) < quietMs) {
       throw new Error('터미널 출력이 멈춘 뒤 전환해 주세요');
     }
     const before = lastAssistant(await readTranscript({

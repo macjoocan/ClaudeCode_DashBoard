@@ -78,9 +78,11 @@ function createBridge(options) {
       m.terminalId = target.id;
       if (time - target.startedAt < readyDelayMs) continue;
       if (target.status === 'busy' || target.status === 'waiting') continue;
-      // 훅이 꺼져 status 를 모를 때는 출력이 잠잠해질 때까지 기다려 시작 화면에
-      // 메시지가 섞이지 않게 한다.
-      if (!target.status && time - target.lastAt < quietMs) continue;
+      // 훅이 꺼져 status 를 모를 때는 화면이 잠잠해질 때까지 기다려 시작 화면에
+      // 메시지가 섞이지 않게 한다. lastAt 대신 lastRealAt 을 쓴다 - Codex TUI 는
+      // 대기 중에도 스피너를 다시 그려서 lastAt 기준으로는 영영 잠잠해지지 않고,
+      // 그래서 Claude -> Codex 전달만 10분 뒤 시간 초과로 실패했다.
+      if (!target.status && time - (target.lastRealAt || target.lastAt) < quietMs) continue;
       try {
         const payload = '\x1b[200~' + envelope(m) + '\x1b[201~\r';
         if (!terminals.write(target.id, payload)) throw new Error('대상 터미널에 쓸 수 없습니다');

@@ -252,7 +252,7 @@ function liveSessions() {
     try { o = JSON.parse(fs.readFileSync(path.join(LIVE_DIR, f), 'utf8')); } catch { continue; }
     if (!o || !o.sessionId || !o.pid) continue;
     if (!pidAlive(o.pid)) continue;
-    bySession.set(o.sessionId, {
+    const rec = {
       provider: 'claude',   // /api/live 에서 Codex 상태와 한 맵에 섞이므로 출처를 남긴다
       pid: o.pid,
       status: o.status || 'idle',          // busy | idle
@@ -262,7 +262,18 @@ function liveSessions() {
       kind: o.kind || 'interactive',
       startedAt: o.startedAt || null,
       statusAt: o.statusUpdatedAt || o.updatedAt || null,
-    });
+      pids: [o.pid],                       // 같은 세션을 물고 있는 모든 프로세스
+    };
+    // 같은 대화를 프로세스 두 개가 물고 있을 수 있다 (예: 이어하기로 두 번째 창을
+    // 띄웠는데 첫 창이 아직 살아 있는 경우). 그냥 덮어쓰면 readdir 순서로 승자가
+    // 정해져서, 옛 창의 'idle' 이 지금 작업 중인 창을 가려버린다.
+    // 상태는 가장 최근에 갱신된 쪽을 쓰고, pid 는 전부 들고 간다.
+    const prev = bySession.get(o.sessionId);
+    if (!prev) { bySession.set(o.sessionId, rec); continue; }
+    const winner = Number(rec.statusAt || 0) >= Number(prev.statusAt || 0) ? rec : prev;
+    const loser = winner === rec ? prev : rec;
+    winner.pids = loser.pids.concat(winner.pids.filter(x => loser.pids.indexOf(x) < 0));
+    bySession.set(o.sessionId, winner);
   }
   return bySession;
 }
@@ -1077,14 +1088,23 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      let killed = false;
-      if (live.pid) killed = await killTree(Number(live.pid));
-      if (!isCodex && live.pid) forgetClaudePid(live.pid);
+      // 한 세션을 프로세스 여러 개가 물고 있을 수 있다. 하나만 끊으면 남은 쪽이
+      // 계속 상태 파일을 써서 곧바로 '실행 중' 으로 되살아난다 - 버튼이 먹통처럼 보인다.
+      const pids = Array.isArray(live.pids) && live.pids.length
+        ? live.pids : (live.pid ? [live.pid] : []);
+      const done = [];
+      for (const pid of pids) {
+        if (await killTree(Number(pid))) done.push(pid);
+        if (!isCodex) forgetClaudePid(pid);
+      }
+      const killed = done.length > 0;
       const cleaned = isCodex ? codex.dropLive(id) : false;
       return json(res, 200, {
-        ok: true, killed, closedTerminal: !!emb, cleaned, pid: live.pid || null,
-        message: killed ? '세션을 종료했습니다 (PID ' + live.pid + ')'
-                        : '이미 종료된 세션입니다 · 목록에서 정리했습니다',
+        ok: true, killed, closedTerminal: !!emb, cleaned,
+        pid: done[0] || live.pid || null, pids: done,
+        message: killed
+          ? '세션을 종료했습니다 (PID ' + done.join(', ') + ')'
+          : '이미 종료된 세션입니다 · 목록에서 정리했습니다',
       });
     }
 
@@ -1274,7 +1294,10 @@ const server = http.createServer(async (req, res) => {
       if (inf.status === 'busy' || inf.status === 'waiting') {
         throw new Error('작업 또는 승인 대기가 끝난 뒤 실행해 주세요');
       }
-      if (!inf.status && Date.now() - Number(t.lastAt || 0) < 1500) {
+      // lastAt 이 아니라 lastRealAt 을 본다 - Codex TUI 는 대기 중에도 스피너를
+      // 다시 그려서 lastAt 기준으로는 영영 잠잠해지지 않고, 그러면 압축·초기화
+      // 버튼이 Codex 터미널에서만 영구히 막힌다.
+      if (!inf.status && Date.now() - Number(t.lastRealAt || t.lastAt || 0) < 1500) {
         throw new Error('터미널 출력이 멈춘 뒤 실행해 주세요');
       }
       if (b.action === 'compact') {

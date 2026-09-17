@@ -180,7 +180,7 @@ function windowLabel(minutes, fallback) {
   return fallback;
 }
 
-function gauge(window, fallback, active) {
+function gauge(window, fallback, active, bucket) {
   if (!window || typeof window.used_percent !== 'number') return null;
   const seconds = Number(window.resets_at);
   return {
@@ -189,7 +189,63 @@ function gauge(window, fallback, active) {
     resetsAt: Number.isFinite(seconds) ? new Date(seconds * 1000).toISOString() : null,
     active: !!active,
     model: null,
+    // 한도는 모델 계열(limit_id)마다 따로 찬다. 어느 바구니의 수치인지 알아야
+    // 0% 짜리 바구니가 실제로 차 있는 바구니를 가리지 않는다.
+    bucket: bucket || null,
   };
+}
+
+// 한 레코드(= 한 시점의 rate_limits)를 게이지 묶음으로 바꾼다.
+function bucketFrom(j) {
+  const r = j?.payload?.rate_limits;
+  if (!r || typeof r !== 'object') return null;
+  const name = r.limit_name || r.limit_id || null;   // 라벨에 박아 바구니를 구분한다
+  const gauges = [
+    gauge(r.primary, '기본 한도', r.rate_limit_reached_type === 'primary', name),
+    gauge(r.secondary, '보조 한도', r.rate_limit_reached_type === 'secondary', name),
+    gauge(r.individual_limit, r.limit_name || '개별 한도', r.rate_limit_reached_type === 'individual', name),
+  ].filter(Boolean);
+  if (!gauges.length && r.rate_limit_reached_type) {
+    gauges.push({
+      label: r.limit_name || r.limit_id || '사용 한도',
+      percent: 100, resetsAt: null, active: true, model: null, bucket: name,
+    });
+  }
+  if (!gauges.length) return null;
+  const at = Date.parse(j.timestamp || '');
+  // timestamp 를 못 읽는 레코드를 '지금' 으로 찍으면, 그 바구니는 진짜 최신 기록에
+  // 영영 덮이지 않고 옛 수치에 박제된다. 시각을 모르면 가장 오래된 것으로 친다.
+  if (!Number.isFinite(at)) return null;
+  return {
+    key: String(r.limit_id || r.limit_name || 'codex'),
+    limitId: r.limit_id || null, limitName: name,
+    plan: planName(r.plan_type), subscription: r.plan_type || null,
+    gauges,
+    credits: r.credits && typeof r.credits === 'object' ? {
+      hasCredits: !!r.credits.has_credits,
+      unlimited: !!r.credits.unlimited,
+      balance: r.credits.balance == null ? null : String(r.credits.balance),
+    } : null,
+    reached: r.rate_limit_reached_type || null,
+    at,
+  };
+}
+
+// 한도는 모델 계열(limit_id)마다 따로 찬다. 마지막 레코드 하나만 보면, 다른 모델로
+// 한 번 돌린 순간 그 모델의 빈 바구니(0%)가 진짜 쓴 한도를 덮어버린다.
+// 그래서 limit_id 별로 가장 최근 기록을 따로 모은다.
+function collectRateLimits(text, into) {
+  const out = into || new Map();
+  for (const line of String(text || '').split(String.fromCharCode(10))) {
+    if (!line || line.indexOf('"rate_limits"') < 0 || line.indexOf('"token_count"') < 0) continue;
+    let j;
+    try { j = JSON.parse(line); } catch { continue; }
+    const b = bucketFrom(j);
+    if (!b) continue;
+    const prev = out.get(b.key);
+    if (!prev || b.at > prev.at) out.set(b.key, b);
+  }
+  return out;
 }
 
 function parseRateLimits(text) {
@@ -234,15 +290,60 @@ function parseRateLimits(text) {
   return null;
 }
 
-function limits(rows) {
-  const files = validRows(rows).sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
-  for (const f of files.slice(0, 20)) {
-    const r = readTail(f.file, LIMIT_TAIL);
-    const data = r && parseRateLimits(r.text);
-    if (data) return { ok: true, data };
-  }
-  return { ok: false, reason: 'Codex 한도 기록을 찾지 못했습니다', noData: true };
+// 가장 빡빡한(=먼저 막히는) 바구니가 앞에 오게 한다. 헤더는 앞의 두 게이지만
+// 보여주므로, 실제로 사용자를 막을 한도가 거기 있어야 한다.
+function bucketWeight(b) {
+  let top = -1;
+  for (const g of b.gauges) if (typeof g.percent === 'number') top = Math.max(top, g.percent);
+  return top;
 }
 
-module.exports = { usageFromTokenCount, parseUsageEntries, usage, parseRateLimits, limits,
+function limits(rows) {
+  const files = validRows(rows).sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+  const buckets = new Map();
+  // 최신 파일부터 읽는다. 같은 시각이면 먼저 본 쪽(더 최근 파일)을 남긴다.
+  for (const f of files.slice(0, 20)) {
+    const r = readTail(f.file, LIMIT_TAIL);
+    if (r) collectRateLimits(r.text, buckets);
+  }
+  if (!buckets.size) return { ok: false, reason: 'Codex 한도 기록을 찾지 못했습니다', noData: true };
+
+  // 리셋 시각이 이미 지난 게이지는 옛 수치다. 그 모델 계열로 한동안 안 돌리면 새
+  // 기록이 안 쓰이므로, 90% 로 차 있던 바구니가 실제로는 리셋됐는데도 그대로 박제돼
+  // 헤더 두 칸을 계속 차지하고 지금 쓰는 바구니를 밀어낸다.
+  const now = Date.now();
+  const list0 = [];
+  for (const b of buckets.values()) {
+    const gauges = b.gauges.filter(g => !g.resetsAt || Date.parse(g.resetsAt) > now);
+    if (gauges.length) list0.push(Object.assign({}, b, { gauges }));
+  }
+  if (!list0.length) {
+    return { ok: false, reason: '최근 Codex 한도 기록이 없습니다 (창이 이미 리셋됨)', noData: true };
+  }
+
+  const list = list0.sort((a, b) => {
+    if (!!b.reached !== !!a.reached) return b.reached ? 1 : -1;
+    const w = bucketWeight(b) - bucketWeight(a);
+    if (w) return w;
+    return b.at - a.at;
+  });
+  const newest = list.reduce((v, b) => (v && v.at >= b.at ? v : b), null);
+  const multi = list.length > 1;
+
+  return { ok: true, data: {
+    plan: newest.plan, subscription: newest.subscription, tier: newest.limitId,
+    // 바구니가 여러 개면 어느 모델 계열 수치인지 라벨에 박는다.
+    gauges: list.flatMap(b => b.gauges.map(g => (multi && g.bucket
+      ? Object.assign({}, g, { label: g.bucket + ' · ' + g.label })
+      : g))),
+    buckets: list.map(b => ({ key: b.key, limitId: b.limitId, limitName: b.limitName, at: b.at })),
+    credits: newest.credits,
+    reached: list.find(b => b.reached)?.reached || null,
+    extra: null,
+    at: newest.at,
+    source: 'local-rollout',
+  } };
+}
+
+module.exports = { usageFromTokenCount, parseUsageEntries, usage, parseRateLimits, collectRateLimits, limits,
   planName, windowLabel };

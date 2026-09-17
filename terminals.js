@@ -66,6 +66,8 @@ function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model, p
     pid: p.pid,
     startedAt: Date.now(),
     lastAt: Date.now(),
+    lastRealAt: Date.now(),   // 스피너를 뺀 '진짜' 마지막 출력 시각
+    paintRing: [],
     exitCode: null, exitedAt: null,
     cols: p.cols, rows: p.rows,
     proc: p,
@@ -78,7 +80,39 @@ function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model, p
   return t;
 }
 
-// PTY 하나를 터미널에 배선한다. create 와 restart 가 같이 쓴다.
+// Codex 의 TUI 는 대기 중에도 점자(U+2800~U+28FF) 스피너를 매 프레임 다시 그린다.
+// "바이트가 흘렀다 = 아직 작업 중" 으로 보면 이 터미널은 영원히 조용해지지 않아서
+// 메시지 전달도 AI 전환도 시작되지 않는다. ANSI 제어열과 스피너를 걷어내고,
+// 남은 글자가 직전과 똑같으면(같은 화면 다시 그리기) 멈춘 것으로 센다.
+const ANSI_RE = /\u001b\[[0-9;?]*[ -\/]*[@-~]|\u001b\][^\u0007]*\u0007|\u001b[()][A-Za-z0-9]|\u001b[=>]/g;
+const SPINNER_RE = /[\u2800-\u28ff]/g;
+const CTRL_RE = /[\u0000-\u001f\u007f]/g;
+
+function paintOf(d) {
+  return String(d).replace(ANSI_RE, '').replace(SPINNER_RE, '')
+    .replace(CTRL_RE, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// 이 출력이 화면을 실제로 바꿨는지.
+//
+// 직전 것 하나만 비교하면 두 프레임을 번갈아 그리는 애니메이션(X,Y,X,Y)에 계속
+// 속는다. 최근 몇 개를 들고 그중 하나와 같으면 새 내용이 아닌 것으로 본다.
+//
+// 한계: PTY 덩어리 경계는 타이밍에 따라 갈리므로, 한 프레임이 여러 덩어리로 쪼개져
+// 매번 다르게 잘리면 여전히 '새 내용' 으로 잡힐 수 있다. 그때는 예전처럼 전달이
+// 늦어질 뿐이고, 잘못된 시점에 끼어들지는 않는다(안전한 쪽으로 틀린다).
+const PAINT_RING = 4;
+function changesScreen(t, d) {
+  const paint = paintOf(d);
+  if (!paint) return false;                 // 스피너·커서 이동뿐
+  const ring = t.paintRing || (t.paintRing = []);
+  if (ring.indexOf(paint) >= 0) return false;
+  ring.push(paint);
+  if (ring.length > PAINT_RING) ring.shift();
+  return true;
+}
+
+// PTY 하나를 배선한다. create 와 restart 가 같이 쓴다.
 //
 // `t.proc !== p` 검사가 핵심이다. 재시작하면 옛 프로세스의 onExit 이 kill 직후가
 // 아니라 **새 프로세스를 꽂은 뒤에** 도착할 수 있다. 그때 걸러내지 않으면 방금 띄운
@@ -89,6 +123,7 @@ function wire(t, p) {
     t.buf += d;
     if (t.buf.length > SCROLLBACK) t.buf = t.buf.slice(-SCROLLBACK);
     t.lastAt = Date.now();
+    if (changesScreen(t, d)) t.lastRealAt = t.lastAt;
     send(t, { t: 'o', d });
   });
 
@@ -147,6 +182,8 @@ function restart(id, { claudeBin, codexBin }, freshStart) {
     t.exitedAt = null;
     t.startedAt = Date.now();
     t.lastAt = Date.now();
+    t.lastRealAt = Date.now();
+    t.paintRing = [];
     t.buf = '';                       // 옛 프로세스의 출력은 버린다
     t.restarts = (t.restarts || 0) + 1;
     wire(t, p);
@@ -180,22 +217,83 @@ function liveInfo(pid) {
 }
 
 // Codex 터미널의 신원은 Claude 상태 파일이 아니라 우리 훅이 쓴
-// ~/.codex/.cc-launcher-live/<sessionId>.json 에서 온다. 그 파일의 pid 는 훅
-// 프로세스의 부모, 즉 우리가 띄운 codex 프로세스(= PTY 의 pid)라 pid 로 역인덱스를
-// 만들면 그대로 매칭된다. list() 가 터미널마다 부르므로 1초 메모한다.
+// ~/.codex/.cc-launcher-live/<sessionId>.json 에서 온다. pid 로 역인덱스를 만든다.
+// list() 가 터미널마다 부르므로 1초 메모한다.
+//
+// 주의: 이 경로는 Codex 가 우리 훅을 실제로 실행해 줄 때만 동작한다. 훅이 안 돌면
+// (버전이 바뀌었거나 hooks.json 이 신뢰 목록에서 빠졌거나) 파일 자체가 안 생기므로
+// 아래 codexSessionByCwd() 로 넘어간다.
 let codexLiveMemo = { at: 0, byPid: new Map() };
-function codexLiveInfo(pid) {
+function codexLiveInfo(t) {
   const now = Date.now();
   if (now - codexLiveMemo.at > 1000) {
     const byPid = new Map();
     try {
       for (const [sessionId, v] of require('./codex.js').liveMap()) {
-        if (v && v.pid) byPid.set(Number(v.pid), { sessionId, status: v.status || 'idle', name: null });
+        if (!v || !v.pid) continue;
+        const key = Number(v.pid);
+        const prev = byPid.get(key);
+        // 강제 종료로 남은 상태 파일은 최대 하루를 버틴다. 그 사이 Windows 가 같은
+        // PID 를 재사용하면 한 pid 를 여러 파일이 주장한다. 가장 최근 것만 남긴다
+        // (readdir 순서로 이기게 두면 죽은 세션이 이길 수 있다).
+        if (prev && Number(prev.at || 0) >= Number(v.at || 0)) continue;
+        byPid.set(key, { sessionId, status: v.status || 'idle', name: null, at: Number(v.at || 0) });
       }
     } catch {}
     codexLiveMemo = { at: now, byPid };
   }
-  return codexLiveMemo.byPid.get(Number(pid)) || null;
+  const hit = codexLiveMemo.byPid.get(Number(t.pid));
+  if (!hit) return null;
+  // 이 터미널이 켜지기 전에 쓰인 기록이면 PID 재사용으로 걸린 남의 세션이다.
+  // 그대로 받으면 패인이 죽은 세션에 영구히 묶인다(전달·AI 전환이 엉뚱한 곳으로 간다).
+  if (hit.at && hit.at < Number(t.startedAt || 0)) return null;
+  return hit;
+}
+
+// 훅이 안 돌면 Codex 터미널이 자기 sessionId 를 영영 못 찾고, 그러면 AI 전환도
+// 메시지 전달도 시작조차 못 한다(둘 다 sessionId 로 대상을 맞춘다).
+// 대안: 우리가 띄운 폴더에서 이 터미널이 켜진 뒤에 갱신된 Codex 세션 중
+// 가장 최근 것을 이 터미널의 세션으로 본다. Codex 는 첫 메시지가 오가야 세션을
+// 만들므로, 그 전까지 null 인 것은 기존과 같다.
+function sameDir(a, b) {
+  const norm = v => String(v || '')
+    .replace(/[\u002f\u005c]+$/, '')
+    .replace(/\u002f/g, String.fromCharCode(92))
+    .toLowerCase();
+  const x = norm(a);
+  return !!x && x === norm(b);
+}
+
+// 같은 폴더에 Codex 터미널을 둘 이상 띄우면 셋 다 '가장 최근 세션' 으로 몰린다.
+// 그러면 한 세션 ID 를 여러 패인이 자기 것이라 주장해서 전달·AI 전환이 엉뚱한
+// 패인으로 가고, ID 복사도 남의 것을 준다. 이미 임자가 있는 세션은 건너뛴다.
+function claimedByOther(id, self) {
+  for (const other of terms.values()) {
+    if (other === self) continue;
+    if (other.exitCode == null && other.sessionId === id) return true;
+  }
+  return false;
+}
+
+let codexRowMemo = { at: 0, rows: [] };
+function codexSessionByCwd(t) {
+  const now = Date.now();
+  if (now - codexRowMemo.at > 2000) {
+    let rows = [];
+    try { rows = require('./codex.js').sessions(); } catch {}
+    codexRowMemo = { at: now, rows };
+  }
+  let best = null;
+  for (const r of codexRowMemo.rows) {
+    if (!r || !sameDir(r.cwd, t.cwd)) continue;
+    // 이 터미널이 켜진 **뒤에 만들어진** 세션만 본다. updated 만 보면 남이 다른
+    // 창에서 켜 둔 옛 세션도 걸려서, 패인이 모르는 사람 대화에 묶인다.
+    const born = Number(r.createdAt) || Number(r.mtime) || 0;
+    if (!(born >= Number(t.startedAt))) continue;
+    if (claimedByOther(r.id, t)) continue;                     // 옆 패인이 이미 쓰는 세션
+    if (!best || Number(r.mtime) > Number(best.mtime)) best = r;
+  }
+  return best ? best.id : null;
 }
 
 function info(t) {
@@ -203,14 +301,18 @@ function info(t) {
   // 영영 못 찾아 카드와 연결되지 않고, (2) Windows 의 PID 재사용으로 죽은 Claude
   // 세션의 상태 파일을 주워 그 Claude 카드가 Codex 터미널을 가리키게 된다.
   const live = t.exitCode != null ? null
-    : (t.provider === 'codex' ? codexLiveInfo(t.pid) : liveInfo(t.pid));
+    : (t.provider === 'codex' ? codexLiveInfo(t) : liveInfo(t.pid));
   if (live && live.sessionId) t.sessionId = live.sessionId;  // 컨텍스트 초기화 뒤 바뀐 ID도 반영
+  else if (!t.sessionId && t.provider === 'codex' && t.exitCode == null) {
+    const guess = codexSessionByCwd(t);
+    if (guess) t.sessionId = guess;
+  }
   return {
     id: t.id, title: t.title, cwd: t.cwd, action: t.action,
     provider: t.provider || 'claude',
     sessionId: t.sessionId, pid: t.pid,
     cols: t.cols, rows: t.rows,
-    startedAt: t.startedAt, lastAt: t.lastAt,
+    startedAt: t.startedAt, lastAt: t.lastAt, lastRealAt: t.lastRealAt || t.lastAt,
     alive: t.exitCode == null,
     exitCode: t.exitCode, exitedAt: t.exitedAt,
     restarts: t.restarts || 0,
@@ -241,6 +343,7 @@ function write(id, data) {
   if (!t || t.exitCode != null) return false;
   t.proc.write(data);
   t.lastAt = Date.now();
+  t.lastRealAt = t.lastAt;
   return true;
 }
 
@@ -299,4 +402,6 @@ function killAll() {
   for (const t of terms.values()) { if (t.exitCode == null) { try { t.proc.kill(); } catch {} } }
 }
 
-module.exports = { create, restart, fresh, list, get, info, write, resize, kill, close, attach, killAll };
+module.exports = { create, restart, fresh, list, get, info, write, resize, kill, close, attach, killAll,
+  // 아래 둘은 테스트용 - paintOf/sameDir 는 순수 함수, _terms 는 등록된 터미널 맵이다.
+  paintOf, sameDir, _terms: terms };

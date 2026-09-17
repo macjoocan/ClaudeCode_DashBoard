@@ -37,15 +37,10 @@ const STATE_DB = path.join(CODEX_HOME, 'state_5.sqlite');
 const LIVE_DIR = path.join(CODEX_HOME, '.cc-launcher-live');
 const LIVE_MAX_AGE = 24 * 60 * 60 * 1000;   // 하루 넘은 상태 파일은 죽은 것으로 본다
 
-// 강제 종료된 CLI 는 상태 파일을 지울 틈이 없다. 나이만 보면 죽은 세션이 하루 내내
-// '실행 중' 으로 남는다 - 대시보드를 강제 종료했다 다시 켜면 딱 그 꼴이 된다.
-// Claude 쪽(liveSessions)처럼 PID 가 실제로 살아 있는지 확인한다.
-function procAlive(pid) {
-  const n = Number(pid);
-  if (!Number.isFinite(n) || n <= 0) return true;   // pid 를 안 남긴 옛 파일은 판정하지 않는다
-  try { process.kill(n, 0); return true; }
-  catch (e) { return e.code === 'EPERM'; }          // 권한이 없을 뿐 살아는 있다
-}
+// 상태 파일의 pid 는 훅 프로세스의 ppid 라서 Codex CLI 프로세스가 아니다. 훅이 끝나면
+// 곧바로 죽으므로 '살아 있는지' 판정에 쓸 수 없다 - 이걸로 거르면 돌고 있는 Codex
+// 세션까지 통째로 사라진다(sessionId 해석·AI 전환·전달이 모두 막힌다).
+// 강제 종료로 남은 상태 파일은 dropLive() 로 지운다(세션 종료 버튼).
 
 // 상태 파일 경로. 파일 이름이 곧 세션 ID 라 경로를 벗어나지 않게 검사한다.
 const SAFE_SESSION_ID = /^[A-Za-z0-9._-]+$/;
@@ -76,7 +71,6 @@ function liveMap(dir) {
     if (!j || !j.sessionId) continue;
     const at = Number(j.at || 0);
     if (!Number.isFinite(at) || now - at > LIVE_MAX_AGE) continue;
-    if (!procAlive(j.pid)) continue;
     out.set(String(j.sessionId), {
       provider: 'codex',   // /api/live 가 Claude 상태와 한 맵에 섞으므로 출처를 남긴다
       status: j.status === 'busy' || j.status === 'waiting' ? j.status : 'idle',
@@ -145,6 +139,9 @@ function readThreads(dbPath) {
       firstPrompt: safeTitle(r.first_user_message),
       last: safeTitle(r.preview, r.first_user_message),
       mtime: Number(r.updated_at_ms) || Number(r.created_at_ms) || 0,
+      // 세션이 '언제 만들어졌는지'. 대시보드가 띄운 터미널이 만든 세션인지
+      // 가리는 데 쓴다 - updated 만 보면 남이 켜 둔 옛 세션도 걸린다.
+      createdAt: Number(r.created_at_ms) || 0,
       branch: r.git_branch || null,
       cwd: normalizeCwd(r.cwd),
       // cwd 와 마찬가지로 rollout_path 도 일부 행이 확장 길이 경로(\\?\C:\...)로

@@ -277,20 +277,13 @@ test('liveMap 은 상태 파일을 읽는다', () => {
   assert.equal(m.get('aaa-111').provider, 'codex');
 });
 
-// 강제 종료된 CLI 는 상태 파일을 못 지운다. 나이만 보면 하루 내내 '실행 중' 으로 남는다.
-test('liveMap 은 PID 가 죽은 파일을 버린다', () => {
+// 상태 파일의 pid 는 훅 프로세스의 ppid 다 - 훅이 끝나면 죽으므로 생존 판정에 쓰면
+// 돌고 있는 Codex 세션까지 사라진다. pid 가 죽었어도 목록에 남아야 한다.
+test('liveMap 은 pid 가 죽었어도 세션을 살린다', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-live-'));
   fs.writeFileSync(path.join(dir, 'dead.json'), JSON.stringify({
     sessionId: 'dead', status: 'busy', pid: 998877, at: Date.now() }), 'utf8');
-  assert.equal(codex.liveMap(dir).size, 0);
-});
-
-// pid 를 안 남긴 옛 파일까지 버리면 멀쩡한 세션이 목록에서 사라진다.
-test('liveMap 은 pid 없는 파일은 그대로 살린다', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-live-'));
-  fs.writeFileSync(path.join(dir, 'nopid.json'), JSON.stringify({
-    sessionId: 'nopid', status: 'idle', at: Date.now() }), 'utf8');
-  assert.ok(codex.liveMap(dir).has('nopid'));
+  assert.equal(codex.liveMap(dir).get('dead').status, 'busy');
 });
 
 test('dropLive 는 상태 파일을 지우고 경로를 벗어나는 id 는 막는다', () => {
