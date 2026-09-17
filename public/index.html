@@ -1063,7 +1063,17 @@ function renderLimits(){
     }
     if (d.extra && d.extra.enabled) lines.push('  추가 사용량 켜짐'
       +(d.extra.percent != null ? ' · '+d.extra.percent+'%' : ''));
-    if (key === 'codex') lines.push('  출처: 로컬 Codex rollout 기록');
+    // Codex 는 서버에 직접 물어본 값일 수도, 거기 실패해서 로컬 기록으로 물러선
+    // 값일 수도 있다. 둘은 신선도가 다르므로 어느 쪽인지 반드시 밝힌다.
+    if (key === 'codex'){
+      if (d.source === 'live') lines.push('  출처: Codex 서버 조회 (지금 값)');
+      else {
+        lines.push('  출처: 로컬 rollout 기록'
+          + (d.at ? ' · ' + new Date(d.at).toLocaleString('ko-KR') + ' 기준' : ''),
+          '        마지막 Codex 턴 시점의 값이라 그 뒤 사용분은 빠져 있습니다.');
+        if (d.liveReason) lines.push('        (서버 조회 실패: ' + d.liveReason + ')');
+      }
+    }
     lines.push('');
   }
 
