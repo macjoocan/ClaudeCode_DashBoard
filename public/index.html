@@ -719,7 +719,7 @@
   <div class="row">
     <h1><span class="dot"></span>AI 코딩 세션 런처</h1>
     <input id="q" placeholder="프로젝트 · 경로 · 세션 제목 · 대화 내용 검색   ( / 로 포커스 )" autocomplete="off">
-    <div class="seg" title="세션을 어디서 열지 - 모든 실행 버튼에 적용됩니다">
+    <div class="seg" title="세션을 어디서 열지 - 모든 실행 버튼에 적용됩니다&#10;Shift 를 누른 채 실행하면 그 한 번만 반대쪽에서 열립니다">
       <button id="m-emb" data-mode="embed">대시보드</button>
       <button id="m-ext" data-mode="window">새 창</button>
     </div>
@@ -1208,14 +1208,23 @@ function renderCounts(){
   $('#env').innerHTML =
     '세션 <b>'+all.length+'</b>개 · 실행 중 <b>'+liveN+'</b>개 · 대시보드 터미널 <b>'+termN+'</b>개'
     + ' &nbsp;|&nbsp; 실행 위치: <b>'+(MODE==='embed'?'대시보드':'새 터미널 창')+'</b>'
+    + ' <span style="color:var(--dim2)" title="이번 한 번만 반대쪽에서 엽니다">(Shift+클릭: '
+    +   (MODE==='embed'?'새 창':'대시보드')+')</span>'
     + ' &nbsp;|&nbsp; <kbd>/</kbd> 검색 <kbd>Enter</kbd> 첫 세션 열기 <kbd>Esc</kbd> 닫기';
   $('#m-emb').classList.toggle('on', MODE==='embed');
   $('#m-ext').classList.toggle('on', MODE==='window');
 }
 
 /* ---------------------------------------------------------- 실행 */
-async function launch(action, cwd, sessionId, title, provider){
-  if (MODE === 'embed'){
+// 실행 위치는 헤더 토글(MODE)이 정하지만, Shift+클릭이면 그 한 번만 반대쪽으로 연다.
+// "평소엔 대시보드, 이 세션만 새 창" 같은 경우를 위해서다. 카드마다 버튼을 하나씩
+// 더 붙이면 이미 4개씩 달린 버튼 줄이 좁아지고, 실행 버튼이 여러 곳에 흩어져 있어
+// 손댈 자리도 그만큼 늘어난다.
+function otherMode(m){ return m === 'embed' ? 'window' : 'embed'; }
+
+async function launch(action, cwd, sessionId, title, provider, modeOverride){
+  const mode = modeOverride || MODE;
+  if (mode === 'embed'){
     await CC.term.open({action:action, cwd:cwd, sessionId:sessionId, title:title, provider:provider});
     setTab('term');
     await loadTerms();
@@ -2385,7 +2394,8 @@ document.addEventListener('click', async function(e){
   }
   if (t.dataset.act){
     t.disabled = true;
-    try{ await launch(t.dataset.act, t.dataset.cwd, t.dataset.sid, t.dataset.title, t.dataset.provider); }
+    try{ await launch(t.dataset.act, t.dataset.cwd, t.dataset.sid, t.dataset.title, t.dataset.provider,
+                      e.shiftKey ? otherMode(MODE) : null); }
     catch(err){ toast(err.message,true); }
     setTimeout(function(){ t.disabled = false; }, 900);
   }
@@ -2414,9 +2424,10 @@ $('#b-close').onclick = closeBridge;
 $('#b-cancel').onclick = closeBridge;
 $('#b-send').onclick = sendBridge;
 $('#bridgemodal').addEventListener('click', function(e){ if (e.target === this) closeBridge(); });
-$('#p-resume').onclick = async function(){
+$('#p-resume').onclick = async function(e){
   if (!openSess) return;
-  try{ await launch('resume', openSess.project.cwd, openSess.id, openSess.title, openSess.provider); closePanel(); }
+  try{ await launch('resume', openSess.project.cwd, openSess.id, openSess.title, openSess.provider,
+                    e && e.shiftKey ? otherMode(MODE) : null); closePanel(); }
   catch(err){ toast(err.message,true); }
 };
 $('#p-goterm').onclick = function(){
