@@ -13,6 +13,16 @@ const SCROLLBACK = 512 * 1024;   // 재접속 시 되살릴 출력량
 const KEEP_DEAD_MS = 10 * 60 * 1000; // 종료된 터미널을 목록에 남겨두는 시간
 // PTY 출력을 브라우저로 내보내기 전에 모으는 시간. 한 프레임 정도면 충분하다.
 const FLUSH_MS = 16;
+// 이어하기 직후 쏟아지는 기록 재생을 화면에 흘리지 않고 붙잡아 두는 구간.
+//
+// 실측: Codex 로 세션을 이어하면 8초 동안 **2.5MB(덩어리 3만 개)** 를 쏟는다. 그동안의
+// 대화를 처음부터 다시 출력하는 것이다. 맨 터미널에서도 똑같이 하므로 Codex 동작이지만,
+// 그대로 브라우저에 흘리면 수만 줄이 지나가며 "무한 스크롤" 로 보인다. 열 때마다 반복된다.
+//
+// 그래서 조용해질 때까지 **보내지 않고 모으기만** 하고, 끝나면 화면을 비운 뒤 다시
+// 그리게 시켜 **현재 화면 한 장만** 남긴다. 기록은 Codex 안에 그대로 있다.
+const HOLD_SETTLE_MS = 1200;    // 이만큼 조용하면 재생이 끝난 것으로 본다
+const HOLD_MAX_MS = 25000;      // 아무리 길어도 여기서는 푼다
 
 const LIVE_DIR = path.join(os.homedir(), '.claude', 'sessions');
 
@@ -79,7 +89,33 @@ function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model, p
   };
   terms.set(id, t);
   wire(t, p);
+  // 이어하기로 띄운 Codex 는 기록 재생이 뒤따른다. 그 구간을 붙잡는다.
+  if (isCodex && (action === 'resume' || action === 'fork')) startHold(t);
   return t;
+}
+
+// 재생이 끝날 때까지 출력을 붙잡았다가, 화면을 비우고 다시 그리게 시킨다.
+function startHold(t) {
+  t.hold = { at: Date.now() };
+  send(t, { t: 'o', d: String.fromCharCode(13, 10)
+    + '  이어하기 기록을 정리하는 중입니다…'
+    + String.fromCharCode(13, 10) });
+  t.holdTimer = setInterval(() => {
+    if (!t.hold || t.exitCode != null) return endHold(t);
+    const quiet = Date.now() - t.lastAt;
+    const spent = Date.now() - t.hold.at;
+    if (quiet >= HOLD_SETTLE_MS || spent >= HOLD_MAX_MS) endHold(t);
+  }, 300);
+  if (t.holdTimer.unref) t.holdTimer.unref();
+}
+
+function endHold(t) {
+  if (t.holdTimer) { clearInterval(t.holdTimer); t.holdTimer = null; }
+  if (!t.hold) return;
+  t.hold = null;
+  t.out = '';                       // 모아둔 재생분은 버린다 - 화면에 뿌릴 것이 아니다
+  send(t, { t: 'reset' });
+  repaint(t.id);                    // 지금 화면만 새로 받아온다
 }
 
 // Codex 의 TUI 는 대기 중에도 점자(U+2800~U+28FF) 스피너를 매 프레임 다시 그린다.
@@ -135,6 +171,9 @@ function wire(t, p) {
     // xterm write 를 초당 천 번 하느라 화면이 밀린다 - 스크롤이 끝없이 도는 것처럼 보인다.
     //
     // 한 프레임(16ms) 동안 모았다가 한 번에 보낸다. 바이트는 그대로고 순서도 그대로다.
+    // 이어하기 재생 구간이면 모으기만 한다. 화면에는 안 보낸다.
+    if (t.hold) return;
+
     t.out = (t.out || '') + d;
     if (!t.flush) {
       t.flush = setTimeout(() => {
@@ -423,6 +462,7 @@ function close(id) {
   const t = terms.get(id);
   if (!t) return false;
   if (t.flush) { clearTimeout(t.flush); t.flush = null; }
+  if (t.holdTimer) { clearInterval(t.holdTimer); t.holdTimer = null; }
   if (t.exitCode == null) { try { t.proc.kill(); } catch {} }
   for (const ws of t.clients) { try { ws.close(); } catch {} }
   terms.delete(id);
