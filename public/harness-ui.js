@@ -346,6 +346,10 @@
   // 실행 중인 세션만 볼지. 세션이 쌓이면 노드가 수십 개라 신호가 묻힌다.
   var LIVEONLY = localStorage.getItem('ccl.gliveonly') === '1';
 
+  // 작업실(도트 캐릭터) 표시 여부. 그래프를 없애지 않고 위에 얹는다 -
+  // "무엇이 연결됐나"(그래프)와 "지금 누가 뭘 하나"(작업실)는 다른 질문이다.
+  var ROOM = localStorage.getItem('ccl.groom') === '1';
+
   function renderGraph(host) {
     if (!GRAPH) { host.innerHTML = '<div class="empty">불러오는 중&#8230;</div>'; return; }
     var g = GRAPH;
@@ -526,6 +530,8 @@
       +   '<button class="gbtn' + (LIVEONLY ? ' on' : '') + '" data-gliveonly="1"'
       +     ' title="실행 중인 세션만 남긴다. 세션이 쌓이면 노드가 수십 개라 신호가 묻힌다">'
       +     '실행 중만</button>'
+      +   '<button class="gbtn' + (ROOM ? ' on' : '') + '" data-groom="1"'
+      +     ' title="지금 도는 세션과 서브에이전트를 도트 캐릭터로 본다">작업실</button>'
       +   '<button class="gbtn" data-ggraph="reload"'
       +     ' title="그래프를 다시 만든다 (새로 시작한 세션 반영)">↻</button>'
       +   '<span class="gcount">세션 ' + sessions.length
@@ -533,12 +539,21 @@
         return n.kind === 'session'; }).length) + '</span>'
       +   '<span class="gl2">세션을 클릭하면 대화가 열리고, 대시보드에서 도는 세션은 그 터미널로 이동합니다</span>'
       + '</div>'
+      + (ROOM ? '<div class="wsbox"><div class="wsnote">불러오는 중…</div>'
+                + '<div class="wsroom" id="wsroom"></div></div>' : '')
       + '<div class="gsplit">'
       +   '<div class="gwrap">' + svg.join('') + '</div>'
       +   '<div class="gfeed"><div class="gfh" id="gfh">실시간 활동</div>'
       +     '<div class="gfl" id="gfl">' + (CC.live ? CC.live.renderFeed() : '') + '</div></div>'
       + '</div>';
     paintLive();
+
+    // 작업실은 host.innerHTML 을 새로 쓸 때마다 캔버스가 날아가므로 여기서 다시 붙인다.
+    if (CC.workshop) {
+      CC.workshop.stop();
+      var room = document.getElementById('wsroom');
+      if (room) CC.workshop.mount(room);
+    }
   }
 
   // 그래프 SVG 위에 실시간 상태를 덧씌운다. 다시 그리지 않고 노드만 갱신하므로
@@ -807,6 +822,12 @@
 
   // 연결 탭 도구 버튼. index.html 의 클릭 위임에서 부른다.
   function handleGraphBtn(el) {
+    if (el.dataset.groom !== undefined) {
+      ROOM = !ROOM;
+      localStorage.setItem('ccl.groom', ROOM ? '1' : '0');
+      if (GRAPH_HOST) renderGraph(GRAPH_HOST);
+      return true;
+    }
     if (el.dataset.gliveonly !== undefined) {
       LIVEONLY = !LIVEONLY;
       localStorage.setItem('ccl.gliveonly', LIVEONLY ? '1' : '0');

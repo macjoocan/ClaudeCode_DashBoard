@@ -621,6 +621,12 @@
 
   /* ---------------- 연결 그래프 탭 ---------------- */
   #graphwrap{padding:14px 20px 70px}
+  /* 작업실 - 도트 캐릭터가 사는 칸. 배경을 살짝 깔아야 픽셀이 또렷하게 보인다. */
+  .wsbox{margin:10px 0 16px;border:1px solid var(--line);border-radius:10px;
+    background:linear-gradient(180deg,#1a1720,#141118);overflow:hidden}
+  .wsnote{padding:8px 12px;font-size:12px;color:var(--dim);border-bottom:1px solid var(--line)}
+  .wsroom{padding:6px 4px}
+  .wscanvas{display:block;image-rendering:pixelated}
   .mband{background:var(--panel);border:1px solid var(--line);border-radius:10px;
     padding:10px 13px;margin-bottom:11px}
   .mbl{display:block;color:var(--dim2);font-size:11px;margin-bottom:7px}
@@ -826,6 +832,7 @@
 <script src="/attention.js"></script>
 <script src="/config-edit.js"></script>
 <script src="/timeline.js"></script>
+<script src="/workshop.js"></script>
 <script src="/harness-ui.js"></script>
 <script>
 const $ = s => document.querySelector(s);
@@ -2065,7 +2072,7 @@ document.addEventListener('click', async function(e){
   if (tl && CC.timeline && CC.timeline.handle(tl)) return;
 
   // 연결 탭 도구 (실행 중만 / 새로고침)
-  const gb = e.target.closest('[data-gliveonly],[data-ggraph]');
+  const gb = e.target.closest('[data-gliveonly],[data-ggraph],[data-groom]');
   if (gb && CC.harness && CC.harness.handleGraphBtn(gb)) return;
 
   const t = e.target.closest('[data-tab],[data-mode],[data-expand],[data-pin],[data-fav],[data-open],'

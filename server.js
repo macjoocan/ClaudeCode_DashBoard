@@ -33,6 +33,7 @@ const { createBridge } = require('./bridge');
 const { commandFor, submitPaste } = require('./session-actions');
 const { createHandoff } = require('./handoff');
 const { wtArgs } = require('./launch-args');
+const { taskkillOutcome } = require('./kill-result');
 const { pendingPrompt } = require('./tui-state');
 const scribe = require('./scribe');    // 마크다운 편집기 (SCRIBE 빌드물 + 파일 브리지)
 
@@ -565,16 +566,67 @@ function focusWindow(pid) {
 // 없다. taskkill /T 로 자식까지 함께 끊는다 - CLI 가 띄운 MCP 서버·서브프로세스가
 // 남으면 포트를 물고 있는다. 콘솔 앱이라 WM_CLOSE 가 안 먹으므로 /F 가 필요하다.
 // 기록(jsonl)은 그때그때 append 되므로 끊어도 대화 내용은 남는다.
+// taskkill 의 종료 코드로 판정한다. **메시지 문자열로 판정하면 안 된다** -
+// taskkill 은 콘솔 코드페이지(한글 Windows 는 CP949)로 출력하는데 Node 는 UTF-8 로
+// 읽으므로 한글이 깨진다. 실측: "오류: 프로세스 "17656"을(를) 찾을 수 없습니다." 가
+// "����: ���μ��� ..." 로 들어와 '찾을 수 없' 검사가 빗나갔고, 이미 죽은 프로세스를
+// 끊으려던 것이 500 으로 튀었다(세션 종료 버튼이 통째로 먹통).
+//
+//   0    끊었다
+//   128  그런 프로세스가 없다 (실측)
+//   그 외 진짜 실패
+// provider 를 가리지 않는 생존 확인.
+// pidAlive() 는 claude.exe 목록(claudePidSet)으로 판정하므로 Codex pid 에는 쓸 수 없다 -
+// 살아 있어도 '없음' 이 나온다.
+function procAlive(pid) {
+  const n = Number(pid);
+  if (!Number.isFinite(n) || n <= 0) return false;
+  try { process.kill(n, 0); return true; }
+  catch (e) { return e.code === 'EPERM'; }   // 권한이 없을 뿐 살아는 있다
+}
+
 function killTree(pid) {
   return new Promise((resolve, reject) => {
     if (!Number.isInteger(pid) || pid <= 0) return reject(new Error('잘못된 PID'));
     execFile('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { timeout: 8000 },
-      (err, stdout, stderr) => {
-        if (!err) return resolve(true);
-        // 이미 사라진 프로세스는 실패가 아니다. 어느 쪽이든 결과는 '안 돌고 있음' 이다.
-        const msg = (String(stdout || '') + ' ' + String(stderr || '')).trim();
-        if (/not found|찾을 수 없|없습니다|없는 프로세스/i.test(msg)) return resolve(false);
-        reject(new Error(msg || String((err && err.message) || '') || '프로세스를 종료하지 못했습니다'));
+      (err) => {
+        const out = taskkillOutcome(err);
+        if (out === 'killed') return resolve(true);
+        if (out === 'absent') return resolve(false);   // 이미 없다 = 실패 아님
+        // 메시지는 깨져 있을 수 있으니 코드만 싣는다.
+        reject(new Error('프로세스 ' + pid + ' 를 종료하지 못했습니다 (taskkill 코드 '
+          + (err && err.code == null ? '?' : err.code) + ')'));
+      });
+  });
+}
+
+// 세션 ID 로 실제 CLI 프로세스를 찾는다.
+//
+// Codex 상태 파일의 pid 는 훅 프로세스의 **부모**라 이미 죽어 있다(실측: 기록된 pid
+// 둘 다 죽었는데 codex.exe 는 돌고 있었다). 그 pid 만 보고 끊으면 아무것도 안 죽고
+// '이미 종료된 세션' 이라고 답한다 - 버튼이 먹통으로 보이는 진짜 이유다.
+//
+// 다행히 이어하기/포크로 띄운 프로세스는 명령줄에 세션 ID 가 그대로 남는다:
+//   codex.exe fork 01a0a4c9-44a6-7d20-ada6-f2434bfc3929
+// 목록만 받아와 **Node 에서** 걸러낸다(세션 ID 를 스크립트에 끼워 넣지 않는다).
+function findSessionPids(sessionId) {
+  return new Promise(resolve => {
+    if (!SAFE_ID.test(String(sessionId || ''))) return resolve([]);
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      "Get-CimInstance Win32_Process -Filter \"Name='codex.exe' or Name='claude.exe'\""
+      + " | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"],
+      { timeout: 10000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+        if (err) return resolve([]);
+        let rows;
+        try { rows = JSON.parse(String(stdout || '[]')); } catch { return resolve([]); }
+        if (!Array.isArray(rows)) rows = [rows];
+        const hits = [];
+        for (const r of rows) {
+          if (!r || !r.CommandLine || !r.ProcessId) continue;
+          if (String(r.CommandLine).indexOf(sessionId) < 0) continue;
+          hits.push(Number(r.ProcessId));
+        }
+        resolve(hits);
       });
   });
 }
@@ -1114,8 +1166,14 @@ const server = http.createServer(async (req, res) => {
 
       // 한 세션을 프로세스 여러 개가 물고 있을 수 있다. 하나만 끊으면 남은 쪽이
       // 계속 상태 파일을 써서 곧바로 '실행 중' 으로 되살아난다 - 버튼이 먹통처럼 보인다.
-      const pids = Array.isArray(live.pids) && live.pids.length
-        ? live.pids : (live.pid ? [live.pid] : []);
+      const recorded = Array.isArray(live.pids) && live.pids.length
+        ? live.pids.map(Number) : (live.pid ? [Number(live.pid)] : []);
+      // 기록된 pid 가 이미 죽었으면 그걸로는 아무것도 못 끊는다. Codex 는 늘 그렇다
+      // (상태 파일의 pid 가 훅 프로세스의 부모라서). 그때는 명령줄에 세션 ID 가 남아
+      // 있는 실제 프로세스를 찾아서 끊는다.
+      const alive = recorded.filter(procAlive);
+      const found = alive.length ? [] : await findSessionPids(id);
+      const pids = [...new Set([...alive, ...found])];
       const done = [];
       for (const pid of pids) {
         if (await killTree(Number(pid))) done.push(pid);
@@ -1125,7 +1183,7 @@ const server = http.createServer(async (req, res) => {
       const cleaned = isCodex ? codex.dropLive(id) : false;
       return json(res, 200, {
         ok: true, killed, closedTerminal: !!emb, cleaned,
-        pid: done[0] || live.pid || null, pids: done,
+        pid: done[0] || null, pids: done, viaCommandLine: found.length > 0,
         message: killed
           ? '세션을 종료했습니다 (PID ' + done.join(', ') + ')'
           : '이미 종료된 세션입니다 · 목록에서 정리했습니다',
