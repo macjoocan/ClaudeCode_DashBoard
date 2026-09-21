@@ -356,6 +356,36 @@ function resize(id, cols, rows) {
   try { t.proc.resize(c, r); t.cols = c; t.rows = r; return true; } catch { return false; }
 }
 
+// 화면을 처음부터 다시 그리게 시킨다.
+//
+// 왜 필요한가: Codex TUI 는 **대체화면(alt screen)을 쓰지 않는다**(실측: ?1049h 가 0).
+// [2J 로 한 번 지운 뒤 [행;열H 절대좌표로 제자리에 덧그린다. 그래서 서버가 모아둔
+// 바이트 로그를 재접속 때 그대로 재생하면, 그동안의 **모든 프레임이 차례로 다시
+// 그려져 화면이 위에서 아래로 주르륵 쌓인다**. 사용자가 본 그 증상이다.
+//
+// 바이트 로그로는 "지금 화면" 을 복원할 수 없다(그러려면 서버가 터미널 에뮬레이터를
+// 들고 있어야 하는데 이 프로젝트는 새 의존성을 금지한다). 대신 **앱에게 다시 그리라고
+// 시킨다** - 크기를 한 칸 줄였다 되돌리면 SIGWINCH 가 가고, Codex 는 현재 화면 전체를
+// 새로 뱉는다(실측: 버퍼를 비우고 크기를 툭 건드리니 현재 화면이 그대로 재구성됐다).
+//
+// 클라이언트에는 알리지 않는다. 브라우저 xterm 의 크기는 그대로고 PTY 도 제자리로
+// 돌아오므로 둘은 계속 같은 크기다 - 리사이즈가 되돌아오는 되먹임이 생기지 않는다.
+function repaint(id) {
+  const t = terms.get(id);
+  if (!t || t.exitCode != null) return false;
+  const c = t.cols, r = t.rows;
+  try {
+    t.proc.resize(Math.max(40, c - 1), r);
+    setTimeout(function () { try { t.proc.resize(c, r); } catch {} }, 60);
+    return true;
+  } catch { return false; }
+}
+
+// 제자리에 덧그리는 TUI 인가. 이런 앱은 바이트 로그 재생이 의미가 없다.
+// 지금은 Codex 뿐이다. Claude Code 는 로그처럼 아래로 덧붙이므로 재생이 맞다
+// (스크롤백이 그대로 살아나야 이전 대화를 볼 수 있다).
+function repaintsInPlace(t) { return t && t.provider === 'codex'; }
+
 function kill(id) {
   const t = terms.get(id);
   if (!t) return false;
@@ -381,7 +411,14 @@ function attach(ws, id) {
   t.clients.add(ws);
   try {
     ws.send(JSON.stringify({ t: 'm', info: info(t) }));
-    if (t.buf) ws.send(JSON.stringify({ t: 'o', d: t.buf, replay: true }));
+    if (repaintsInPlace(t) && t.exitCode == null) {
+      // 옛 프레임을 재생하지 않는다. 화면을 비우고 앱에게 다시 그리라고 시킨다.
+      ws.send(JSON.stringify({ t: 'reset' }));
+      repaint(id);
+    } else if (t.buf) {
+      // 죽은 터미널은 다시 그려줄 주체가 없다. 마지막 모습이라도 보여준다.
+      ws.send(JSON.stringify({ t: 'o', d: t.buf, replay: true }));
+    }
     if (t.exitCode != null) ws.send(JSON.stringify({ t: 'x', code: t.exitCode }));
   } catch {}
 
@@ -402,6 +439,7 @@ function killAll() {
   for (const t of terms.values()) { if (t.exitCode == null) { try { t.proc.kill(); } catch {} } }
 }
 
-module.exports = { create, restart, fresh, list, get, info, write, resize, kill, close, attach, killAll,
+module.exports = { create, restart, fresh, list, get, info, write, resize, repaint, repaintsInPlace,
+  kill, close, attach, killAll,
   // 아래 둘은 테스트용 - paintOf/sameDir 는 순수 함수, _terms 는 등록된 터미널 맵이다.
   paintOf, sameDir, _terms: terms };

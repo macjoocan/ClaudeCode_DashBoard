@@ -75,3 +75,26 @@ test('종료된 터미널은 어느 provider 든 상태를 읽지 않는다', ()
   assert.equal(info.alive, false);
   assert.equal(info.status, null);
 });
+
+// Codex TUI 는 대체화면을 쓰지 않고(실측: ?1049h 가 0) 제자리에 덧그린다.
+// 그래서 서버가 모은 바이트 로그를 재접속 때 재생하면 그동안의 모든 프레임이
+// 차례로 다시 그려져 화면이 위에서 아래로 쌓인다. 재생 대신 다시 그리게 시킨다.
+test('제자리에 덧그리는 TUI 만 재생 대신 다시 그리기를 쓴다', () => {
+  assert.equal(terminals.repaintsInPlace({ provider: 'codex' }), true);
+  // Claude Code 는 로그처럼 아래로 덧붙이므로 재생이 맞다 - 스크롤백이 살아나야 한다
+  assert.equal(terminals.repaintsInPlace({ provider: 'claude' }), false);
+  assert.equal(terminals.repaintsInPlace({}), false);
+  assert.ok(!terminals.repaintsInPlace(null));
+});
+
+test('repaint 는 없는 터미널이나 죽은 터미널에 조용히 물러난다', () => {
+  assert.equal(terminals.repaint('없는터미널'), false);
+  const dead = { id: 'tDead', provider: 'codex', cols: 80, rows: 24,
+    exitCode: 0, exitedAt: Date.now(), clients: new Set(), buf: '' };
+  terminals._terms.set('tDead', dead);
+  try {
+    assert.equal(terminals.repaint('tDead'), false);
+  } finally {
+    terminals._terms.delete('tDead');
+  }
+});
