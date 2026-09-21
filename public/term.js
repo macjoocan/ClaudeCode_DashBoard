@@ -952,7 +952,18 @@
     var chunk = (v.outQ || []).join('');
     v.outQ = []; v.outLen = 0;
     if (!chunk || !views.has(v.info.id)) return;
-    try { v.term.write(chunk); } catch (e) {}
+
+    // 쓰기 **전에** 하단에 있었는지 본다. 쓰고 나면 baseY 가 이미 움직여서 늦는다.
+    var b = v.term.buffer.active;
+    var wasAtBottom = b.viewportY >= b.baseY;
+    try {
+      v.term.write(chunk, function () {
+        // 출력이 들어오면 화면을 하단에 붙여 둔다. 이게 없으면 새 내용이 아래에
+        // 쌓이는 동안 보이는 곳은 그대로라, 화면이 계속 위로 흘러가는 것처럼 보인다.
+        // 위로 올려 옛 내용을 보고 있던 사람은 끌어내리지 않는다.
+        if (wasAtBottom) { try { v.term.scrollToBottom(); } catch (e) {} }
+      });
+    } catch (e) {}
   }
 
   function writeLive(v, d) {
