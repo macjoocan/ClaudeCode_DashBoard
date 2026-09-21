@@ -240,6 +240,11 @@ Windows Terminal 이 없는 PC 는 원래부터 `Start-Process powershell` 로 �
 - **진짜 터미널이다.** node-pty(ConPTY) + xterm.js 로 실제 PTY 를 붙였다. Claude Code TUI 가
   그대로 뜨고, 권한 승인 프롬프트·폴더 신뢰 확인·슬래시 명령 자동완성·`shift+tab` 모드 전환·
   Ctrl+C 가 전부 정상 동작한다.
+- **PTY 출력을 한 프레임(16ms)씩 묶어 보낸다.** 실측: Codex 가 그리는 중에는 **초당 1100개**
+  덩어리가 나온다 - 동기화 구간(`ESC[?2026h … ESC[?2026l`)과 커서 모양(`ESC[0 q`)을 프레임마다
+  쏘느라 길이 1짜리 덩어리도 수백 개다. 그걸 하나씩 WS 로 보내면 브라우저가 JSON 파싱과
+  xterm write 를 초당 천 번 하느라 화면이 밀린다. 묶으면 **초당 43개**로 줄어든다(26배).
+  바이트도 순서도 그대로다 - 보내는 횟수만 줄인다.
 - **Codex 패인은 스크롤백을 두지 않는다.** 제자리에 덧그리는 TUI 라 뒤로 밀린 줄은
   "지난 대화" 가 아니라 **옛 프레임 조각**이다. 볼 것도 없는데 값은 비싸다 - 실측: Codex
   패인 하나가 8000줄까지 차고, 패인 크기를 바꾸거나 터미널을 하나 더 열어 배치가 바뀔
@@ -910,6 +915,20 @@ Codex 쪽에서 한 번 변환이 필요하다: **Codex 의 `input_tokens` 는 `
 파일별로 캐시한다 (mtime+size 로 무효화). Codex 도 같은 자리에서 같은 방식으로
 캐시하되, rollout 은 끝 256KB 만 읽는다 (실측: 마지막 `token_count` 는 EOF 에서
 3KB 안쪽이다).
+
+## 세션에서 직접 보내기 (bridge-send.js)
+
+Claude Code 의 `SendMessage`/`ListAgents` 는 **Claude Code 세션끼리만** 안다. Codex 세션
+ID 를 주면 `no agent named ... is reachable` 로 반송된다. 하네스 기능이라 대시보드가
+고칠 수 있는 게 아니다. 대신 대시보드가 이미 가진 브리지를 세션에서 부를 수 있게 했다.
+
+```
+node C:/00.SVN/Claude_code/cc-launcher/bridge-send.js                      # 보낼 수 있는 세션 목록
+node C:/00.SVN/Claude_code/cc-launcher/bridge-send.js <세션ID> "보낼 말"   # 보내기
+```
+
+발신은 지금 폴더에서 돌고 있는 반대편 세션을 알아서 고른다(`--from` 으로 지정 가능).
+보낸 뒤에는 **도착이 확인될 때까지** 상태를 찍고, 실패하면 사유를 낸다.
 
 ## Claude ↔ Codex 세션 메시지 전달
 

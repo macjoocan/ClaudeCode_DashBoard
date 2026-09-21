@@ -11,6 +11,8 @@ const os = require('os');
 
 const SCROLLBACK = 512 * 1024;   // 재접속 시 되살릴 출력량
 const KEEP_DEAD_MS = 10 * 60 * 1000; // 종료된 터미널을 목록에 남겨두는 시간
+// PTY 출력을 브라우저로 내보내기 전에 모으는 시간. 한 프레임 정도면 충분하다.
+const FLUSH_MS = 16;
 
 const LIVE_DIR = path.join(os.homedir(), '.claude', 'sessions');
 
@@ -124,7 +126,24 @@ function wire(t, p) {
     if (t.buf.length > SCROLLBACK) t.buf = t.buf.slice(-SCROLLBACK);
     t.lastAt = Date.now();
     if (changesScreen(t, d)) t.lastRealAt = t.lastAt;
-    send(t, { t: 'o', d });
+
+    // 덩어리마다 WS 메시지를 하나씩 보내지 않는다.
+    //
+    // 실측: Codex 가 그리는 중일 때 **초당 1100개** 덩어리가 나온다. 동기화 구간
+    // (ESC[?2026h … ESC[?2026l)과 커서 모양(ESC[0 q)을 프레임마다 쏘기 때문인데,
+    // 길이 1짜리 덩어리도 수백 개다. 그걸 그대로 하나씩 보내면 브라우저가 JSON 파싱과
+    // xterm write 를 초당 천 번 하느라 화면이 밀린다 - 스크롤이 끝없이 도는 것처럼 보인다.
+    //
+    // 한 프레임(16ms) 동안 모았다가 한 번에 보낸다. 바이트는 그대로고 순서도 그대로다.
+    t.out = (t.out || '') + d;
+    if (!t.flush) {
+      t.flush = setTimeout(() => {
+        t.flush = null;
+        const chunk = t.out; t.out = '';
+        if (chunk) send(t, { t: 'o', d: chunk });
+      }, FLUSH_MS);
+      if (t.flush.unref) t.flush.unref();
+    }
   });
 
   p.onExit(({ exitCode }) => {
@@ -403,6 +422,7 @@ function kill(id) {
 function close(id) {
   const t = terms.get(id);
   if (!t) return false;
+  if (t.flush) { clearTimeout(t.flush); t.flush = null; }
   if (t.exitCode == null) { try { t.proc.kill(); } catch {} }
   for (const ws of t.clients) { try { ws.close(); } catch {} }
   terms.delete(id);
