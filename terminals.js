@@ -11,8 +11,14 @@ const os = require('os');
 
 const SCROLLBACK = 512 * 1024;   // 재접속 시 되살릴 출력량
 const KEEP_DEAD_MS = 10 * 60 * 1000; // 종료된 터미널을 목록에 남겨두는 시간
-// PTY 출력을 브라우저로 내보내기 전에 모으는 시간. 한 프레임 정도면 충분하다.
+// PTY 출력을 브라우저로 내보내기 전에 모으는 시간.
+//
+// 보통 CLI 는 한 프레임(16ms)이면 충분하다. 그런데 제자리에 덧그리는 TUI 는 화면 전체를
+// 계속 새로 그리므로, 60fps 로 반영하면 눈에 어지럽고 렌더 비용도 그만큼 든다.
+// TUI 에 60fps 는 과하다 - 사람이 읽는 화면이지 게임이 아니다. 바이트는 그대로 모이므로
+// 정보가 빠지지는 않고, 한 번에 반영되는 양만 커진다.
 const FLUSH_MS = 16;
+const FLUSH_MS_TUI = 60;        // 제자리에 덧그리는 쪽(Codex)
 // 이어하기 직후 쏟아지는 기록 재생을 화면에 흘리지 않고 붙잡아 두는 구간.
 //
 // 실측: Codex 로 세션을 이어하면 8초 동안 **2.5MB(덩어리 3만 개)** 를 쏟는다. 그동안의
@@ -188,7 +194,7 @@ function wire(t, p) {
         t.flush = null;
         const chunk = t.out; t.out = '';
         if (chunk) send(t, { t: 'o', d: chunk });
-      }, FLUSH_MS);
+      }, repaintsInPlace(t) ? FLUSH_MS_TUI : FLUSH_MS);
       if (t.flush.unref) t.flush.unref();
     }
   });
