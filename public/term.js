@@ -455,8 +455,10 @@
       // 패인 크기를 바꾸거나 터미널을 하나 더 열어 배치가 바뀔 때마다 xterm 이 그 8000줄을
       // 전부 다시 줄바꿈한다. 그게 "스크롤이 계속 도는" 것처럼 보이고 실제로도 버벅인다.
       // (그 리사이즈로 새로 들어온 출력은 0바이트였다 - 순전히 reflow 비용이다.)
-      // Claude Code 는 로그처럼 덧붙이므로 스크롤백이 진짜 기록이다. 그대로 둔다.
-      scrollback: info.provider === 'codex' ? 0 : 8000, theme: THEME
+      // 0 으로 두면 뒤를 아예 못 봐서 오히려 화면이 잘린 것처럼 보인다(실측).
+      // 1000줄이면 reflow 는 싸고 최근 것은 되짚을 수 있다.
+      // Claude Code 는 로그처럼 덧붙이므로 스크롤백이 진짜 기록이다. 8000 줄 그대로 둔다.
+      scrollback: info.provider === 'codex' ? 1000 : 8000, theme: THEME
     });
     var fit = new window.FitAddon.FitAddon();
     term.loadAddon(fit);

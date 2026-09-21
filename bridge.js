@@ -37,6 +37,19 @@ function createBridge(options) {
   const settleMs = options.settleMs == null ? 4000 : options.settleMs;
   const minScreen = options.minScreen == null ? 512 : options.minScreen;
   const submitDelayMs = options.submitDelayMs == null ? 250 : options.submitDelayMs;
+  // 쓴 것이 정말 상대 대화에 들어갔는지 확인한다. 안 들어갔으면 다시 쓴다.
+  //
+  // 타이밍 규칙(조용한가·프롬프트는 없나·화면은 그려졌나)을 아무리 맞춰도 빠져나가는
+  // 경우가 남았다 - 상태는 delivered 인데 Codex 세션 기록에는 없는 일이 실제로 있었다.
+  // 규칙을 더 얹어 추측을 정교하게 만드는 대신, **결과를 확인**한다. envelope 에 박힌
+  // 메시지 ID 가 상대 기록에 나타나면 그때 delivered 로 본다.
+  const verify = options.verify || null;          // (message) => Promise<boolean>
+  // 확인 창을 넉넉히 준다. 짧으면 **중복 전송**이 난다 - 상대가 받아서 기록에 적기까지
+  // 시간이 걸리는데, 그 전에 재시도하면 같은 메시지가 두 번 들어간다(실측: 20초로 뒀다가
+  // 봉투가 상대 대화에 두 번 찍혔다). 놓친 메시지를 늦게 다시 보내는 쪽이,
+  // 멀쩡히 간 메시지를 두 번 보내는 쪽보다 낫다.
+  const verifyWindowMs = options.verifyWindowMs == null ? 60000 : options.verifyWindowMs;
+  const maxSends = options.maxSends == null ? 2 : options.maxSends;
   const now = options.now || Date.now;
   const messages = new Map();
   let seq = 0;
@@ -46,6 +59,7 @@ function createBridge(options) {
       id: m.id, status: m.status, createdAt: m.createdAt, deliveredAt: m.deliveredAt || null,
       source: m.source, target: m.target, terminalId: m.terminalId || null,
       launched: !!m.launched, error: m.error || null, waitingOn: m.waitingOn || null,
+      sends: m.sends || 0,
     };
   }
 
@@ -111,17 +125,49 @@ function createBridge(options) {
       // 시작 직후에는 프롬프트가 늦게 뜬다. 잠깐 깨끗한 것만 보고 쓰면 그 틈에 끼인다.
       if (time - target.startedAt < startupMs && time - m.clearSince < settleMs) continue;
       m.waitingOn = null;
+
+      // 이미 한 번 썼으면 확인 창이 끝날 때까지 기다린다. 그 안에 상대 기록에 나타나면
+      // 성공, 안 나타나면 다시 쓴다(컴포저에 머물러 있다가 제출이 씹히는 경우가 있다).
+      if (m.sentAt && time - m.sentAt < verifyWindowMs) continue;
+      if (m.sends >= maxSends) {
+        m.status = 'failed';
+        m.error = verify
+          ? '전달했지만 대상 대화에 나타나지 않았습니다 (' + m.sends + '회 시도)'
+          : '전달을 확인하지 못했습니다';
+        continue;
+      }
+
       try {
         // 붙여넣기와 Enter 를 나눠 보낸다. Codex 는 201~ 바로 뒤에 붙인 CR 을 제출로
         // 받지 않아 본문이 컴포저에 남는다(실측). 그게 Claude -> Codex 만 안 되던 이유다.
         if (!submitPaste(terminals.write, target.id, envelope(m), submitDelayMs)) {
           throw new Error('대상 터미널에 쓸 수 없습니다');
         }
-        m.status = 'delivered';
-        m.deliveredAt = time;
+        m.sends = (m.sends || 0) + 1;
+        m.sentAt = time;
+        if (!verify) {                      // 확인할 방법이 없으면 예전처럼 쓴 즉시 완료
+          m.status = 'delivered';
+          m.deliveredAt = time;
+        }
       } catch (e) {
         m.status = 'failed';
         m.error = String((e && e.message) || e);
+      }
+    }
+  }
+
+  // 상대 기록을 뒤져 우리 메시지가 들어갔는지 본다. 실패는 조용히 넘긴다 -
+  // 확인이 안 된다고 전달을 실패로 만들면 안 된다(재시도가 알아서 한다).
+  async function checkDelivered() {
+    if (!verify) return;
+    for (const m of messages.values()) {
+      if (m.status !== 'queued' || !m.sentAt) continue;
+      let ok = false;
+      try { ok = await verify(publicMessage(m)); } catch { ok = false; }
+      if (ok) {
+        m.status = 'delivered';
+        m.deliveredAt = now();
+        m.waitingOn = null;
       }
     }
   }
@@ -145,6 +191,7 @@ function createBridge(options) {
       target: { provider: targetProvider, id: String(input.target.id),
         title: cleanText(input.target.title).slice(0, 200), cwd: String(input.target.cwd || '') },
       text, launched: false, terminalId: null, error: null, waitingOn: null, clearSince: null,
+      sends: 0, sentAt: 0,
     };
     messages.set(m.id, m);
     trimHistory();
@@ -169,9 +216,9 @@ function createBridge(options) {
     return m ? publicMessage(m) : null;
   }
 
-  const timer = setInterval(pump, 500);
+  const timer = setInterval(function () { pump(); checkDelivered(); }, 500);
   if (timer.unref) timer.unref();
-  return { send, get, pump, close: () => clearInterval(timer), cleanText };
+  return { send, get, pump, checkDelivered, close: () => clearInterval(timer), cleanText };
 }
 
 module.exports = { createBridge, cleanText, MAX_TEXT };

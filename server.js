@@ -93,6 +93,30 @@ const sessionBridge = createBridge({
       claudeBin: CLAUDE_BIN, codexBin: CODEX_BIN, provider: target.provider,
     });
   },
+  // 정말 상대 대화에 들어갔는지 **기록으로** 확인한다.
+  //
+  // PTY 에 썼다는 것과 상대가 받았다는 것은 다르다 - 상태는 delivered 인데 Codex 세션
+  // 기록에는 없는 경우를 실제로 봤다. 타이밍 규칙을 더 얹어 추측을 정교하게 만드는
+  // 대신 결과를 본다. envelope 에 박힌 메시지 ID 가 기록에 나타나면 도착한 것이다.
+  //
+  // 못 읽는 것과 안 들어간 것을 구분하지 않는다 - 둘 다 "아직 확인 안 됨" 이고,
+  // 재시도가 알아서 처리한다. 예외는 밖으로 던지지 않는다.
+  async verify(message) {
+    const id = message && message.id;
+    const t = message && message.target;
+    if (!id || !t || !t.id) return false;
+    try {
+      let msgs = [];
+      if (t.provider === 'codex') {
+        msgs = (codex.transcript(t.id, 20) || {}).msgs || [];
+      } else {
+        const found = findScannedSession('claude', t.id);
+        if (!found) return false;
+        msgs = (transcript(found.s.slug, found.s.id, 20) || {}).messages || [];
+      }
+      return msgs.some(m => m && m.role === 'user' && String(m.text || '').indexOf(id) >= 0);
+    } catch { return false; }
+  },
 });
 
 const handoffManager = createHandoff({

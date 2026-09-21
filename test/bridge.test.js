@@ -155,3 +155,90 @@ test('시간이 지나도 프롬프트면 사유가 담긴 오류로 끝난다',
   assert.equal(got.status, 'failed');
   assert.ok(got.error.indexOf('확인 프롬프트') >= 0, got.error);
 });
+
+// PTY 에 썼다는 것과 상대가 받았다는 것은 다르다. 실측: 상태는 delivered 인데
+// Codex 세션 기록에는 없는 경우가 있었다. 결과를 확인하고, 안 들어갔으면 다시 쓴다.
+function verifyFixture(opts) {
+  let clock = 10000;
+  const t = { id: 'term-new', provider: 'codex', sessionId: 'x1', alive: true,
+    status: null, startedAt: clock, lastAt: clock, buf: 'x'.repeat(900) };
+  const writes = [];
+  const bridge = createBridge({
+    terminals: {
+      list: () => [t], get: () => t,
+      write: (id, data) => { writes.push({ id, data }); return true; },
+    },
+    startTarget: () => t,
+    readyDelayMs: 1000, quietMs: 100, minScreen: 0, settleMs: 0,
+    submitDelayMs: 1, verifyWindowMs: 5000, maxSends: 3,
+    now: () => clock,
+    ...(opts || {}),
+  });
+  return { bridge, writes, tick(ms) { clock += ms; } };
+}
+
+const toCodex2 = {
+  source: { provider: 'claude', id: 'c1', title: '설계', project: 'C:' + String.fromCharCode(92) + 'work' },
+  target: { provider: 'codex', id: 'x1', title: '작업', cwd: 'C:' + String.fromCharCode(92) + 'work' },
+  text: '이어서 해줘',
+};
+
+test('상대 기록에 나타나야 delivered 로 본다', async () => {
+  let landed = false;
+  const f = verifyFixture({ verify: async () => landed });
+  const m = await f.bridge.send(toCodex2);
+  f.tick(1200); f.bridge.pump();
+  assert.equal(f.writes.filter(w => w.data.length > 1).length, 1, '한 번 썼다');
+  await f.bridge.checkDelivered();
+  assert.equal(f.bridge.get(m.id).status, 'queued', '아직 확인 안 됨');
+
+  landed = true;
+  await f.bridge.checkDelivered();
+  assert.equal(f.bridge.get(m.id).status, 'delivered');
+});
+
+test('확인 창 안에는 다시 쓰지 않는다', async () => {
+  const f = verifyFixture({ verify: async () => false });
+  await f.bridge.send(toCodex2);
+  f.tick(1200); f.bridge.pump();
+  f.tick(1000); f.bridge.pump();          // 확인 창(5초) 안이다
+  assert.equal(f.writes.filter(w => w.data.length > 1).length, 1);
+});
+
+test('확인 창이 지나면 다시 쓰고, 횟수를 넘기면 사유를 남기고 끝낸다', async () => {
+  const f = verifyFixture({ verify: async () => false });
+  const m = await f.bridge.send(toCodex2);
+  for (let i = 0; i < 4; i++) { f.tick(6000); f.bridge.pump(); }
+  const pastes = f.writes.filter(w => w.data.length > 1).length;
+  assert.equal(pastes, 3, '최대 3회까지만 쓴다');
+  const got = f.bridge.get(m.id);
+  assert.equal(got.status, 'failed');
+  assert.ok(got.error.indexOf('나타나지 않았습니다') >= 0, got.error);
+  assert.equal(got.sends, 3);
+});
+
+test('확인 수단이 없으면 예전처럼 쓴 즉시 완료로 본다', async () => {
+  const f = verifyFixture({ verify: null });
+  const m = await f.bridge.send(toCodex2);
+  f.tick(1200); f.bridge.pump();
+  assert.equal(f.bridge.get(m.id).status, 'delivered');
+});
+
+// 확인 창이 짧으면 중복 전송이 난다. 상대가 받아 기록에 적기까지 걸리는 시간보다
+// 창이 짧으면, 멀쩡히 간 메시지를 한 번 더 보낸다(실측: 봉투가 두 번 찍혔다).
+test('확인이 늦게 되는 경우에도 두 번 보내지 않는다', async () => {
+  let landed = false;
+  const f = verifyFixture({ verify: async () => landed, verifyWindowMs: 60000, maxSends: 2 });
+  const m = await f.bridge.send(toCodex2);
+  f.tick(1200); f.bridge.pump();
+  assert.equal(f.writes.filter(w => w.data.length > 1).length, 1);
+
+  // 상대가 30초 뒤에야 기록에 적었다 - 창(60초) 안이므로 재전송이 없어야 한다
+  f.tick(30000); f.bridge.pump();
+  assert.equal(f.writes.filter(w => w.data.length > 1).length, 1, '창 안에서는 다시 안 쓴다');
+
+  landed = true;
+  await f.bridge.checkDelivered();
+  assert.equal(f.bridge.get(m.id).status, 'delivered');
+  assert.equal(f.bridge.get(m.id).sends, 1, '한 번만 보냈다');
+});
