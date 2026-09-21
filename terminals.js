@@ -21,8 +21,12 @@ const FLUSH_MS = 16;
 //
 // 그래서 조용해질 때까지 **보내지 않고 모으기만** 하고, 끝나면 화면을 비운 뒤 다시
 // 그리게 시켜 **현재 화면 한 장만** 남긴다. 기록은 Codex 안에 그대로 있다.
-const HOLD_SETTLE_MS = 1200;    // 이만큼 조용하면 재생이 끝난 것으로 본다
-const HOLD_MAX_MS = 25000;      // 아무리 길어도 여기서는 푼다
+// 조용한 시간으로 재면 안 된다 - 재생 중간에 1초 넘는 틈이 있어서 끝난 줄 알고 풀면
+// 나머지가 그대로 쏟아진다(실측: 12초·18초에 1000줄이 새어 나왔다).
+// 유입 **속도**로 가른다. 재생은 200~300KB/s, 대기 중 스피너는 10KB/s 안쪽이라 확연히 갈린다.
+const HOLD_RATE_BPS = 20000;    // 1초에 이보다 적게 오면 '재생 아님' 으로 센다
+const HOLD_CALM_TICKS = 3;      // 그런 초가 연달아 이만큼이면 끝난 것으로 본다
+const HOLD_MAX_MS = 40000;      // 아무리 길어도 여기서는 푼다
 
 const LIVE_DIR = path.join(os.homedir(), '.claude', 'sessions');
 
@@ -96,16 +100,20 @@ function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model, p
 
 // 재생이 끝날 때까지 출력을 붙잡았다가, 화면을 비우고 다시 그리게 시킨다.
 function startHold(t) {
-  t.hold = { at: Date.now() };
+  t.hold = { at: Date.now(), bytes: 0 };
   send(t, { t: 'o', d: String.fromCharCode(13, 10)
     + '  이어하기 기록을 정리하는 중입니다…'
     + String.fromCharCode(13, 10) });
+  t.hold.seen = 0;
+  t.hold.calm = 0;
   t.holdTimer = setInterval(() => {
     if (!t.hold || t.exitCode != null) return endHold(t);
-    const quiet = Date.now() - t.lastAt;
+    const got = t.hold.bytes - t.hold.seen;     // 지난 1초 동안 들어온 양
+    t.hold.seen = t.hold.bytes;
+    t.hold.calm = got < HOLD_RATE_BPS ? t.hold.calm + 1 : 0;
     const spent = Date.now() - t.hold.at;
-    if (quiet >= HOLD_SETTLE_MS || spent >= HOLD_MAX_MS) endHold(t);
-  }, 300);
+    if (t.hold.calm >= HOLD_CALM_TICKS || spent >= HOLD_MAX_MS) endHold(t);
+  }, 1000);
   if (t.holdTimer.unref) t.holdTimer.unref();
 }
 
@@ -172,7 +180,7 @@ function wire(t, p) {
     //
     // 한 프레임(16ms) 동안 모았다가 한 번에 보낸다. 바이트는 그대로고 순서도 그대로다.
     // 이어하기 재생 구간이면 모으기만 한다. 화면에는 안 보낸다.
-    if (t.hold) return;
+    if (t.hold) { t.hold.bytes += d.length; return; }
 
     t.out = (t.out || '') + d;
     if (!t.flush) {
