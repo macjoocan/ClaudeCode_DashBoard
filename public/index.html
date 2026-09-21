@@ -1920,11 +1920,21 @@ function openBridge(token){
   const groups = {same:[], other:[]};
   for (const s of candidates){
     const e = emb.get(s.id);
-    const external = !!s.live && !e;
+    // 서버(/api/bridge/send)와 같은 규칙으로 판정한다.
+    // Codex 의 라이브 표시는 훅이 남긴 파일이고 세션이 끝나도 최대 하루를 버틴다.
+    // 그대로 믿으면 최근에 한 번 돌린 Codex 세션이 전부 '전달 불가' 로 잠긴다.
+    // 서버는 이미 최근 2분 안에 갱신된 표시만 믿도록 고쳤는데 여기만 남아 있었다.
+    const liveAt = Number((s.live && s.live.at) || 0);
+    const trustLive = s.provider !== 'codex' || (liveAt > 0 && Date.now() - liveAt < 120000);
+    const external = !!s.live && trustLive && !e;
     const state = external ? '외부 창 실행 중 · 전달 불가'
       : (e ? (s.live && statusLabel(s.live) || '대시보드 대기 중') : '꺼짐 · 자동 재개');
+    // 세션 ID 앞자리를 같이 보여준다. Codex 는 제목이 비어 있는 것이 많아
+    // "프로젝트 · (제목 없음)" 만으로는 어느 것인지 가릴 수가 없다(실측 7개가 동률).
+    // 터미널의 ID 복사 버튼이 주는 값과 앞자리가 같아 눈으로 맞출 수 있다.
     const option = '<option value="'+esc(s.provider+'|'+s.id)+'"'+(external?' disabled':'')+'>'
-      +esc(s.project.name+' · '+(s.title||'(제목 없음)')+' ['+state+']')+'</option>';
+      +esc(s.project.name+' · '+(s.title||'(제목 없음)')
+           +' · '+String(s.id).slice(0, 8)+' ['+state+']')+'</option>';
     groups[s.project.key === source.project.key ? 'same' : 'other'].push(option);
   }
   const select = $('#b-target');

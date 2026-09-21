@@ -353,7 +353,13 @@ function resize(id, cols, rows) {
   const c = Math.max(40, Math.min(400, Math.floor(cols) || t.cols));
   const r = Math.max(10, Math.min(200, Math.floor(rows) || t.rows));
   if (c === t.cols && r === t.rows) return true;
-  try { t.proc.resize(c, r); t.cols = c; t.rows = r; return true; } catch { return false; }
+  try {
+    t.proc.resize(c, r); t.cols = c; t.rows = r;
+    // 여기서 화면을 비우지 않는다. 한때 그렇게 했는데, 리사이즈로 Codex 가 새로 뱉는
+    // 출력이 0바이트인 경우가 있어(실측) 빈 화면만 남았다. 쌓임 자체는 Codex 패인의
+    // 스크롤백을 0으로 둬서 막는다 - 밀려날 곳이 없으면 쌓이지도 않는다.
+    return true;
+  } catch { return false; }
 }
 
 // 화면을 처음부터 다시 그리게 시킨다.

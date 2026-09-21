@@ -448,7 +448,15 @@
       // 주의: 생성자에 false 가 전달되는 것까지는 확인했지만, xterm 의 options 읽기가
       // 계속 true 를 돌려줘 화면에서의 효과는 확인하지 못했다.
       cursorBlink: info.provider !== 'codex', allowProposedApi: true,
-      scrollback: 8000, theme: THEME
+      // Codex 는 스크롤백을 두지 않는다.
+      //
+      // 제자리에 덧그리는 TUI 라 뒤로 밀린 줄은 "지난 대화" 가 아니라 **옛 프레임 조각**이다.
+      // 남겨봐야 볼 것이 없는데 값은 비싸다 - 실측: Codex 패인 하나가 8000줄까지 차고,
+      // 패인 크기를 바꾸거나 터미널을 하나 더 열어 배치가 바뀔 때마다 xterm 이 그 8000줄을
+      // 전부 다시 줄바꿈한다. 그게 "스크롤이 계속 도는" 것처럼 보이고 실제로도 버벅인다.
+      // (그 리사이즈로 새로 들어온 출력은 0바이트였다 - 순전히 reflow 비용이다.)
+      // Claude Code 는 로그처럼 덧붙이므로 스크롤백이 진짜 기록이다. 그대로 둔다.
+      scrollback: info.provider === 'codex' ? 0 : 8000, theme: THEME
     });
     var fit = new window.FitAddon.FitAddon();
     term.loadAddon(fit);
