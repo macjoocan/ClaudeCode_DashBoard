@@ -242,3 +242,29 @@ test('확인이 늦게 되는 경우에도 두 번 보내지 않는다', async (
   assert.equal(f.bridge.get(m.id).status, 'delivered');
   assert.equal(f.bridge.get(m.id).sends, 1, '한 번만 보냈다');
 });
+
+// 붙여넣기 직후의 Enter 가 씹히면 본문이 컴포저에 남는다. 사람이 Enter 를 누르기
+// 전까지 전달이 안 된다(실측). 본문을 다시 쓰면 중복이 나므로, 맨 Enter 만 넣는다.
+test('제출이 씹히면 Enter 만 한 번 더 넣는다', () => {
+  // submitDelayMs 를 크게 둬서 붙여넣기 직후의 Enter(진짜 타이머)는 이 시험 동안 안 온다.
+  // 여기서 세는 Enter 는 오직 '씹혔을 때 넣는 것' 뿐이다.
+  const f = verifyFixture({ verify: async () => false, verifyWindowMs: 60000,
+    nudgeAfterMs: 8000, submitDelayMs: 600000 });
+  return f.bridge.send(toCodex2).then(() => {
+    f.tick(1200); f.bridge.pump();
+    const pastes = () => f.writes.filter(w => w.data.length > 1).length;
+    const enters = () => f.writes.filter(w => w.data === '\r').length;
+    assert.equal(pastes(), 1);
+
+    f.tick(3000); f.bridge.pump();
+    assert.equal(enters(), 0, '아직 이르다');
+
+    f.tick(6000); f.bridge.pump();
+    assert.equal(enters(), 1, 'Enter 를 한 번 넣는다');
+    assert.equal(pastes(), 1, '본문은 다시 쓰지 않는다 - 중복이 난다');
+
+    f.tick(6000); f.bridge.pump();
+    f.tick(6000); f.bridge.pump();
+    assert.equal(enters(), 1, '한 번만 넣는다');
+  });
+});

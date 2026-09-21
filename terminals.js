@@ -33,6 +33,12 @@ const FLUSH_MS_TUI = 60;        // 제자리에 덧그리는 쪽(Codex)
 const HOLD_RATE_BPS = 20000;    // 1초에 이보다 적게 오면 '재생 아님' 으로 센다
 const HOLD_CALM_TICKS = 3;      // 그런 초가 연달아 이만큼이면 끝난 것으로 본다
 const HOLD_MAX_MS = 40000;      // 아무리 길어도 여기서는 푼다
+// 재생이 시작되기 전에 붙잡기가 끝나 버리는 것을 막는다.
+//
+// 실측: 붙잡은 것이 576 바이트뿐이고 재생 1000줄은 그 뒤에 그대로 흘러갔다.
+// Codex 가 뜨는 동안은 조용하니 '다 끝났다' 로 본 것이다. 이만큼 쏟아진 적이
+// 있어야 비로소 '끝났는지' 를 따진다. 재생이 없는 세션은 아래 MAX 로 풀린다.
+const HOLD_MIN_BYTES = 64 * 1024;
 
 const LIVE_DIR = path.join(os.homedir(), '.claude', 'sessions');
 
@@ -104,9 +110,18 @@ function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model, p
   return t;
 }
 
-// 재생이 끝날 때까지 출력을 붙잡았다가, 화면을 비우고 다시 그리게 시킨다.
+// 재생이 끝날 때까지 출력을 붙잡았다가, **모아둔 것을 통째로** 한 번에 내보낸다.
+//
+// 예전에는 모아둔 재생을 버리고 화면 한 장만 다시 그리게 했다. 그랬더니 되짚을
+// 것이 하나도 남지 않아서 마우스 휠이 아무 일도 하지 않았다. 재생 내용은 옛 화면
+// 조각이 아니라 진짜 대화 기록이다(실측: 이어하기 뒤 스크롤백 1000줄이 전부 읽을
+// 수 있는 대화였다). 버릴 것이 아니라 스크롤백에 남겨야 하는 것이다.
+//
+// 다만 흘려보내면 그리는 과정이 그대로 보인다 - 그게 '끝없이 스크롤되는' 증상이다.
+// 그래서 조용해질 때까지 모았다가 한 덩어리로 보낸다. 브라우저는 그 동안 패인을
+// 가려 두고 다 쓴 뒤에 맨 아래를 보여준다.
 function startHold(t) {
-  t.hold = { at: Date.now(), bytes: 0 };
+  t.hold = { at: Date.now(), bytes: 0, buf: '' };
   send(t, { t: 'o', d: String.fromCharCode(13, 10)
     + '  이어하기 기록을 정리하는 중입니다…'
     + String.fromCharCode(13, 10) });
@@ -118,7 +133,8 @@ function startHold(t) {
     t.hold.seen = t.hold.bytes;
     t.hold.calm = got < HOLD_RATE_BPS ? t.hold.calm + 1 : 0;
     const spent = Date.now() - t.hold.at;
-    if (t.hold.calm >= HOLD_CALM_TICKS || spent >= HOLD_MAX_MS) endHold(t);
+    const started = t.hold.bytes >= HOLD_MIN_BYTES;   // 재생이 실제로 시작됐나
+    if ((started && t.hold.calm >= HOLD_CALM_TICKS) || spent >= HOLD_MAX_MS) endHold(t);
   }, 1000);
   if (t.holdTimer.unref) t.holdTimer.unref();
 }
@@ -126,10 +142,14 @@ function startHold(t) {
 function endHold(t) {
   if (t.holdTimer) { clearInterval(t.holdTimer); t.holdTimer = null; }
   if (!t.hold) return;
+  const replay = t.hold.buf;
   t.hold = null;
-  t.out = '';                       // 모아둔 재생분은 버린다 - 화면에 뿌릴 것이 아니다
-  send(t, { t: 'reset' });
-  repaint(t.id);                    // 지금 화면만 새로 받아온다
+  // reset 은 보내지 않는다. 클라이언트의 term.reset() 은 스크롤백까지 지운다 -
+  // 되짚을 기록을 없애는 것이 바로 그것이었다.
+  // repaint 는 하지 않는다. 앱에게 다시 그리라고 시키면 Codex 는 화면이 아니라
+  // **기록 전체를 처음부터 다시 그린다**(실측: 재생 뒤 950줄이 또 밀려 내려갔다).
+  // 모아둔 재생의 마지막 부분이 이미 지금 화면이다.
+  if (replay) send(t, { t: 'replay', d: replay });
 }
 
 // Codex 의 TUI 는 대기 중에도 점자(U+2800~U+28FF) 스피너를 매 프레임 다시 그린다.
@@ -185,8 +205,13 @@ function wire(t, p) {
     // xterm write 를 초당 천 번 하느라 화면이 밀린다 - 스크롤이 끝없이 도는 것처럼 보인다.
     //
     // 한 프레임(16ms) 동안 모았다가 한 번에 보낸다. 바이트는 그대로고 순서도 그대로다.
-    // 이어하기 재생 구간이면 모으기만 한다. 화면에는 안 보낸다.
-    if (t.hold) { t.hold.bytes += d.length; return; }
+    // 이어하기 재생 구간이면 모으기만 한다. 끝나면 한 덩어리로 내보낸다.
+    if (t.hold) {
+      t.hold.bytes += d.length;
+      t.hold.buf += d;
+      if (t.hold.buf.length > SCROLLBACK) t.hold.buf = t.hold.buf.slice(-SCROLLBACK);
+      return;
+    }
 
     t.out = (t.out || '') + d;
     if (!t.flush) {
@@ -491,10 +516,12 @@ function attach(ws, id) {
   t.clients.add(ws);
   try {
     ws.send(JSON.stringify({ t: 'm', info: info(t) }));
-    if (repaintsInPlace(t) && t.exitCode == null) {
-      // 옛 프레임을 재생하지 않는다. 화면을 비우고 앱에게 다시 그리라고 시킨다.
-      ws.send(JSON.stringify({ t: 'reset' }));
-      repaint(id);
+    if (repaintsInPlace(t) && t.buf) {
+      // 다시 그리라고 시키지 않는다. Codex 는 그 말을 들으면 기록 전체를 처음부터
+      // 다시 그리고, 그게 새로고침할 때마다 화면이 쓸려 내려가던 원인이었다.
+      // reset 도 보내지 않는다 - 클라이언트의 term.reset() 은 스크롤백을 지운다.
+      // 우리가 들고 있는 출력을 그대로 넘긴다. 브라우저는 가린 채로 한 번에 쓴다.
+      ws.send(JSON.stringify({ t: 'replay', d: t.buf }));
     } else if (t.buf) {
       // 죽은 터미널은 다시 그려줄 주체가 없다. 마지막 모습이라도 보여준다.
       ws.send(JSON.stringify({ t: 'o', d: t.buf, replay: true }));

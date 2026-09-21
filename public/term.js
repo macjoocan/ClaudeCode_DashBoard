@@ -422,14 +422,13 @@
   // (병합 정리: 여기 있던 같은 목적의 구현을 지웠다. 둘 다 두면 contextmenu 리스너가
   //  두 개 붙어, 선택 상태로 우클릭하면 복사한 뒤 곧바로 붙여넣기까지 일어난다.)
 
-  // Codex 패인을 대체화면으로 넣는다.
+  // 참고: 예전에 Codex 패인을 강제로 대체화면(?1049h)에 넣었다. 되돌렸다.
   //
-  // term.reset() 은 대체화면을 빠져나간다. 서버가 화면을 비우라고 할 때마다
-  // 풀리므로, 리셋 뒤에는 다시 들어가야 한다.
-  function enterAltScreen(term, provider) {
-    if (provider !== 'codex') return;
-    try { term.write(String.fromCharCode(27) + '[?1049h'); } catch (e) {}
-  }
+  // 대체화면에는 스크롤백이 없다. 그래서 마우스 휠로 되짚을 것이 아예 없었고,
+  // 게다가 xterm 은 대체화면에서 휠을 **위/아래 화살표 키로 바꿔 앱에 보낸다**.
+  // Codex 가 그걸 받아 제 대화 기록을 스크롤했다 - 휠을 굴리면 터미널이 아니라
+  // 지난 대화가 쓸려 지나가던 것이 이것이다. 맨 터미널에서 멀쩡했던 이유이기도 하다.
+  // 그쪽은 대체화면을 쓰지 않는다. 우리도 쓰지 않는다.
 
   function mount(info) {
     if (views.has(info.id)) return views.get(info.id);
@@ -457,7 +456,7 @@
       // 주의: 생성자에 false 가 전달되는 것까지는 확인했지만, xterm 의 options 읽기가
       // 계속 true 를 돌려줘 화면에서의 효과는 확인하지 못했다.
       cursorBlink: info.provider !== 'codex', allowProposedApi: true,
-      // Codex 는 스크롤백을 두지 않는다.
+      // Codex 는 스크롤백을 짧게 둔다.
       //
       // 제자리에 덧그리는 TUI 라 뒤로 밀린 줄은 "지난 대화" 가 아니라 **옛 프레임 조각**이다.
       // 남겨봐야 볼 것이 없는데 값은 비싸다 - 실측: Codex 패인 하나가 8000줄까지 차고,
@@ -465,6 +464,7 @@
       // 전부 다시 줄바꿈한다. 그게 "스크롤이 계속 도는" 것처럼 보이고 실제로도 버벅인다.
       // (그 리사이즈로 새로 들어온 출력은 0바이트였다 - 순전히 reflow 비용이다.)
       // 0 으로 두면 뒤를 아예 못 봐서 오히려 화면이 잘린 것처럼 보인다(실측).
+      // 마우스 휠로 되짚으려면 남아 있어야 한다 - 0 이면 휠이 아무 것도 안 한다.
       // 1000줄이면 reflow 는 싸고 최근 것은 되짚을 수 있다.
       // Claude Code 는 로그처럼 덧붙이므로 스크롤백이 진짜 기록이다. 8000 줄 그대로 둔다.
       scrollback: info.provider === 'codex' ? 1000 : 8000, theme: THEME
@@ -473,17 +473,6 @@
     term.loadAddon(fit);
     try { term.loadAddon(new window.WebLinksAddon.WebLinksAddon()); } catch (e) {}
     term.open(body);
-
-    // Codex 패인은 **우리가** 대체화면으로 넣는다.
-    //
-    // Codex 는 Windows ConPTY 에서 대체화면을 안 쓴다(실측: tui.alternate_screen 을
-    // auto/always/never 로 바꿔도 ?1049h 가 0). 그래서 전체 화면을 다시 그릴 때마다
-    // 아래로 밀린 줄이 스크롤백으로 들어가고, 화면이 끝없이 구르는 것처럼 보인다.
-    //
-    // 대체화면에는 스크롤백이 없다 - 밀려날 곳이 없으니 제자리에서만 다시 그려진다.
-    // Codex 가 안 켜주면 xterm 쪽에서 켜면 된다. 앱은 이걸 모르고, 그릴 때 쓰는
-    // 절대좌표([행;열H)는 어느 버퍼에서나 똑같이 동작한다.
-    enterAltScreen(term, info.provider);
 
     var v = { el: el, head: head, body: body, term: term, fit: fit, ws: null, info: info, alive: info.alive };
     // Explicit navigation wins over the pending initial-replay scroll.
@@ -1022,11 +1011,24 @@
       try { m = JSON.parse(ev.data); } catch (e) { return; }
       if (m.t === 'o') {
         writeOutput(v, m, ws);
+      } else if (m.t === 'replay') {
+        // 이어하기 기록 재생. 서버가 조용해질 때까지 모았다가 한 덩어리로 준다.
+        //
+        // 이걸 그냥 쓰면 xterm 이 파싱하면서 중간중간 그리기 때문에 화면이 위에서
+        // 아래로 쓸려 내려가는 것이 그대로 보인다. 다 쓸 때까지 패인을 가려 둔다.
+        // 기록은 스크롤백에 그대로 남으므로 마우스 휠로 되짚을 수 있다.
+        dropPending(v);
+        v.body.style.visibility = 'hidden';
+        try {
+          v.term.write(m.d, function () {
+            v.body.style.visibility = '';
+            try { v.term.scrollToBottom(); } catch (e) {}
+          });
+        } catch (e) { v.body.style.visibility = ''; }
       } else if (m.t === 'reset') {
         v.replayScroll = null;
         dropPending(v); endReplay(v);      // 옛 PTY 의 대기 출력을 새 화면에 쏟지 않는다
         v.term.reset();                    // 서버가 PTY 를 갈아끼웠다
-        enterAltScreen(v.term, v.info && v.info.provider);
       } else if (m.t === 'm') {
         // /api/terms가 덧붙인 fav/slug는 PTY 메타데이터에 없으므로 보존한다.
         v.info = Object.assign({}, v.info, m.info); v.alive = m.info.alive;

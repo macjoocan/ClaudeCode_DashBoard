@@ -6,7 +6,7 @@
 'use strict';
 
 const { pendingPrompt } = require('./tui-state');
-const { submitPaste } = require('./session-actions');
+const { submitPaste, ENTER } = require('./session-actions');
 
 const MAX_TEXT = 12000;
 const MAX_MESSAGES = 200;
@@ -57,6 +57,12 @@ function createBridge(options) {
   // 확인은 큐가 살아있는 동안(10분) 계속 한다. 정말 못 갔으면 사유를 남기고 끝난다.
   const verifyWindowMs = options.verifyWindowMs == null ? EXPIRE_MS : options.verifyWindowMs;
   const maxSends = options.maxSends == null ? 1 : options.maxSends;
+  // 붙여넣기 직후의 Enter 가 씹혔을 때 **맨 Enter 만** 한 번 더 넣어 본다.
+  //
+  // 실측: 본문이 컴포저에 남아 있다가 사람이 Enter 를 누르자 그제야 대화로 들어갔다.
+  // 본문을 다시 쓰면 같은 말이 두 번 들어가지만(전에 실제로 그랬다), 맨 Enter 는
+  // 컴포저가 비어 있으면 아무 일도 하지 않으므로 중복을 만들지 않는다.
+  const nudgeAfterMs = options.nudgeAfterMs == null ? 8000 : options.nudgeAfterMs;
   const now = options.now || Date.now;
   const messages = new Map();
   let seq = 0;
@@ -135,7 +141,14 @@ function createBridge(options) {
 
       // 이미 한 번 썼으면 확인 창이 끝날 때까지 기다린다. 그 안에 상대 기록에 나타나면
       // 성공, 안 나타나면 다시 쓴다(컴포저에 머물러 있다가 제출이 씹히는 경우가 있다).
-      if (m.sentAt && time - m.sentAt < verifyWindowMs) continue;
+      if (m.sentAt && time - m.sentAt < verifyWindowMs) {
+        // 아직 안 나타났고 충분히 기다렸으면 Enter 만 한 번 더 넣는다. 본문은 다시 쓰지 않는다.
+        if (!m.nudged && time - m.sentAt >= nudgeAfterMs) {
+          m.nudged = true;
+          try { terminals.write(target.id, ENTER); } catch (e) {}
+        }
+        continue;
+      }
       if (m.sends >= maxSends) {
         m.status = 'failed';
         m.error = verify
