@@ -48,8 +48,15 @@ function createBridge(options) {
   // 시간이 걸리는데, 그 전에 재시도하면 같은 메시지가 두 번 들어간다(실측: 20초로 뒀다가
   // 봉투가 상대 대화에 두 번 찍혔다). 놓친 메시지를 늦게 다시 보내는 쪽이,
   // 멀쩡히 간 메시지를 두 번 보내는 쪽보다 낫다.
-  const verifyWindowMs = options.verifyWindowMs == null ? 60000 : options.verifyWindowMs;
-  const maxSends = options.maxSends == null ? 2 : options.maxSends;
+  // 재시도는 하지 않는다(기본 1회).
+  //
+  // 상대가 작업 중이면 붙여넣기가 컴포저에 머물다가, 작업이 끝나는 순간 제출된다.
+  // 그 사이에 다시 쓰면 **둘 다** 들어간다 - 실측: 상대가 3분 9초 걸리는 일을 하고 있어서
+  // 60초 창을 넘겼고, 같은 봉투가 두 번 찍혔다. 늦게 도착하는 것은 기다리면 되지만
+  // 두 번 들어간 것은 사람이 치워야 한다.
+  // 확인은 큐가 살아있는 동안(10분) 계속 한다. 정말 못 갔으면 사유를 남기고 끝난다.
+  const verifyWindowMs = options.verifyWindowMs == null ? EXPIRE_MS : options.verifyWindowMs;
+  const maxSends = options.maxSends == null ? 1 : options.maxSends;
   const now = options.now || Date.now;
   const messages = new Map();
   let seq = 0;

@@ -422,6 +422,15 @@
   // (병합 정리: 여기 있던 같은 목적의 구현을 지웠다. 둘 다 두면 contextmenu 리스너가
   //  두 개 붙어, 선택 상태로 우클릭하면 복사한 뒤 곧바로 붙여넣기까지 일어난다.)
 
+  // Codex 패인을 대체화면으로 넣는다.
+  //
+  // term.reset() 은 대체화면을 빠져나간다. 서버가 화면을 비우라고 할 때마다
+  // 풀리므로, 리셋 뒤에는 다시 들어가야 한다.
+  function enterAltScreen(term, provider) {
+    if (provider !== 'codex') return;
+    try { term.write(String.fromCharCode(27) + '[?1049h'); } catch (e) {}
+  }
+
   function mount(info) {
     if (views.has(info.id)) return views.get(info.id);
 
@@ -464,6 +473,17 @@
     term.loadAddon(fit);
     try { term.loadAddon(new window.WebLinksAddon.WebLinksAddon()); } catch (e) {}
     term.open(body);
+
+    // Codex 패인은 **우리가** 대체화면으로 넣는다.
+    //
+    // Codex 는 Windows ConPTY 에서 대체화면을 안 쓴다(실측: tui.alternate_screen 을
+    // auto/always/never 로 바꿔도 ?1049h 가 0). 그래서 전체 화면을 다시 그릴 때마다
+    // 아래로 밀린 줄이 스크롤백으로 들어가고, 화면이 끝없이 구르는 것처럼 보인다.
+    //
+    // 대체화면에는 스크롤백이 없다 - 밀려날 곳이 없으니 제자리에서만 다시 그려진다.
+    // Codex 가 안 켜주면 xterm 쪽에서 켜면 된다. 앱은 이걸 모르고, 그릴 때 쓰는
+    // 절대좌표([행;열H)는 어느 버퍼에서나 똑같이 동작한다.
+    enterAltScreen(term, info.provider);
 
     var v = { el: el, head: head, body: body, term: term, fit: fit, ws: null, info: info, alive: info.alive };
     // Explicit navigation wins over the pending initial-replay scroll.
@@ -995,6 +1015,7 @@
         v.replayScroll = null;
         dropPending(v); endReplay(v);      // 옛 PTY 의 대기 출력을 새 화면에 쏟지 않는다
         v.term.reset();                    // 서버가 PTY 를 갈아끼웠다
+        enterAltScreen(v.term, v.info && v.info.provider);
       } else if (m.t === 'm') {
         // /api/terms가 덧붙인 fav/slug는 PTY 메타데이터에 없으므로 보존한다.
         v.info = Object.assign({}, v.info, m.info); v.alive = m.info.alive;
