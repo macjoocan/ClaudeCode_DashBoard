@@ -107,6 +107,9 @@
   .btn.live:hover{background:#7cc0e4;border-color:#7cc0e4;color:#08131a}
   .btn.ghost{background:transparent;color:var(--dim);border-color:transparent}
   .btn.ghost:hover{background:var(--panel2);border-color:var(--line)}
+  /* 스크롤백 복원 중에는 감춘다 - 처음부터 아래로 주르륵 그려지는 게 보이지 않게.
+     visibility 여야 레이아웃이 남아 FitAddon 이 크기를 제대로 잰다. */
+  .pb2.replaying{visibility:hidden}
   .btn.danger{color:var(--bad)}
   .btn.danger:hover{background:var(--panel2);border-color:var(--bad);color:var(--bad)}
   .btn.xs{padding:3px 8px;font-size:11.5px}
@@ -719,7 +722,7 @@
   <div class="row">
     <h1><span class="dot"></span>AI 코딩 세션 런처</h1>
     <input id="q" placeholder="프로젝트 · 경로 · 세션 제목 · 대화 내용 검색   ( / 로 포커스 )" autocomplete="off">
-    <div class="seg" title="세션을 어디서 열지 - 모든 실행 버튼에 적용됩니다&#10;Shift 를 누른 채 실행하면 그 한 번만 반대쪽에서 열립니다">
+    <div class="seg" title="세션을 어디서 열지 - 모든 실행 버튼에 적용됩니다&#10;Shift 를 누른 채 실행하면 그 한 번만 반대쪽에서 열립니다 (새 창 쪽은 탭이 아니라 새 창)">
       <button id="m-emb" data-mode="embed">대시보드</button>
       <button id="m-ext" data-mode="window">새 창</button>
     </div>
@@ -1230,8 +1233,16 @@ async function launch(action, cwd, sessionId, title, provider, modeOverride){
     await loadTerms();
     toast('대시보드 터미널에서 실행했습니다');
   } else {
-    await post('/api/launch', {action:action, cwd:cwd, sessionId:sessionId, provider:provider});
-    toast('새 터미널 창에서 실행했습니다');
+    // Shift+클릭으로 '이번 한 번만' 밖으로 뺄 때는 **새 창**을 연다.
+    //
+    // 헤더 토글의 '새 창' 은 wt -w 0 이라 이미 떠 있는 터미널에 탭으로 붙는다.
+    // 평소엔 대시보드로 쓰다가 이 세션 하나만 딴 화면에 띄워놓고 보려는 건데
+    // 탭으로 쌓이면 목적이 안 된다. 그래서 override 로 나갈 때만 -w -1 을 쓴다.
+    // (실측: -w -1 은 보이는 터미널 창이 3->4, -w 0 은 3 그대로)
+    const newWindow = !!modeOverride;
+    await post('/api/launch', {action:action, cwd:cwd, sessionId:sessionId,
+                               provider:provider, newWindow:newWindow});
+    toast(newWindow ? '새 터미널 창에서 실행했습니다' : '터미널 새 탭에서 실행했습니다');
   }
   setTimeout(pollLive, 2500);
 }
@@ -2488,6 +2499,32 @@ CC.cfgEdit.onChanged = function(){
   CC.harness.loadConfig($('#cfgwrap')).then(updateCfgBadge);
 };
 CC.toast = toast;   // config-edit.js 가 쓴다
+
+// 터미널에 찍힌 .md 경로를 Ctrl+클릭했을 때 (term.js 가 부른다).
+//
+// SCRIBE 는 "보관 폴더" 하나를 열어 그 안의 문서를 다루는 구조라, 바깥에서
+// "이 파일을 열어라" 라고 시킬 방법이 없다(빌드에 그런 훅이 없다).
+// 그래서 파일이 있는 폴더로 보관 폴더를 바꾸고 문서 탭으로 보낸다.
+// 마지막 클릭 한 번은 사용자 몫이다 - 어느 파일인지는 토스트로 알려준다.
+CC.openMd = async function(p, cwd){
+  try{
+    const j = await post('/api/md/resolve', { path: p, cwd });
+    if (!MDSTATE){
+      try { MDSTATE = await mdCall('status'); }
+      catch (e) { MDSTATE = { ok:false, error: e.message }; }
+    }
+    if (!MDSTATE.ok){
+      toast('SCRIBE 를 쓸 수 없습니다: ' + (MDSTATE.error || ''), true);
+      return;
+    }
+    setTab('md');
+    await mdEnter();
+    const same = MDSTATE.vault && String(MDSTATE.vault).toLowerCase() === j.dir.toLowerCase();
+    if (!same) await mdSetVault(j.dir);
+    toast(same ? j.file + ' · 목록에서 여세요'
+               : '보관 폴더를 ' + j.dir + ' 로 바꿨습니다 · ' + j.file + ' 을 여세요');
+  }catch(err){ toast('문서를 열지 못했습니다: ' + err.message, true); }
+};
 
 $('#refresh').onclick = function(){
   if (TAB === 'graph') return CC.harness.loadGraph($('#graphwrap'));

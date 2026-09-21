@@ -216,6 +216,34 @@ function findCodexBin() {
 // rollout jsonl 한 줄 = { timestamp, type, payload }.
 // 첫 줄(session_meta)은 base_instructions 때문에 50KB 를 넘을 수 있어
 // 줄 단위로 읽되 내용은 필요한 것만 뽑는다.
+// Codex v0.155 부터 rollout 형식이 바뀌었다. 옛 형식도 그대로 읽어야 지난 세션의
+// 대화 보기가 깨지지 않으므로 둘 다 받는다.
+//
+//   옛것  event_msg + payload.type 'user_message' / 'agent_message', 본문은 payload.message
+//   새것  event_msg + payload.type 'item_completed', payload.item.type 으로 갈리고
+//         본문은 item.content[].text
+//
+// 이걸 안 따라가면 transcript() 가 **0개**를 돌려준다. 그러면 AI 전환이 요약을 영영
+// 못 찾아 'summarizing' 에서 멈추고(실측), Codex 대화 보기도 빈 화면이 된다.
+const ITEM_ROLE = {
+  UserMessage: 'user',
+  AgentMessage: 'assistant',
+  CommandExecution: 'tool',
+  McpToolCall: 'tool',
+  FileChange: 'tool',
+};
+
+function itemText(item) {
+  const c = item && item.content;
+  if (Array.isArray(c)) {
+    const parts = c.map(x => (x && typeof x.text === 'string') ? x.text : '').filter(Boolean);
+    if (parts.length) return parts.join(String.fromCharCode(10));
+  }
+  if (typeof item.text === 'string') return item.text;
+  if (typeof item.command === 'string') return item.command;
+  return '';
+}
+
 function rowToMsg(j) {
   const p = j.payload || {};
   const at = j.timestamp || null;
@@ -223,6 +251,13 @@ function rowToMsg(j) {
     return { role: 'user', text: String(p.message), at };
   if (j.type === 'event_msg' && p.type === 'agent_message' && p.message)
     return { role: 'assistant', text: String(p.message), at };
+  if (p.type === 'item_completed' && p.item) {
+    const role = ITEM_ROLE[p.item.type];
+    if (!role) return null;                       // Reasoning 등은 대화로 치지 않는다
+    const text = itemText(p.item);
+    if (!text) return null;
+    return { role, text: role === 'tool' ? text.slice(0, 400) : text, at };
+  }
   if (j.type === 'response_item' && p.type === 'function_call')
     return { role: 'tool', text: `${p.name || 'tool'} ${String(p.arguments || '').slice(0, 400)}`, at };
   return null;

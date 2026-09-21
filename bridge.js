@@ -5,6 +5,9 @@
 // 두 에이전트가 서로를 무한 호출하는 루프가 생기지 않는다.
 'use strict';
 
+const { pendingPrompt } = require('./tui-state');
+const { submitPaste } = require('./session-actions');
+
 const MAX_TEXT = 12000;
 const MAX_MESSAGES = 200;
 const EXPIRE_MS = 10 * 60 * 1000;
@@ -25,6 +28,15 @@ function createBridge(options) {
   const startTarget = options.startTarget;
   const readyDelayMs = options.readyDelayMs == null ? 2500 : options.readyDelayMs;
   const quietMs = options.quietMs == null ? 700 : options.quietMs;
+  // 시작 직후 화면이 조용하다고 준비된 게 아니다. 실측(Codex 이어하기):
+  //   0.4s  출력 16바이트, 화면 정지 407ms  -> 이때 쓰면 붙여넣기가 통째로 먹힌다
+  //   3.2s  '업데이트 알림' 모달이 뜨고 사용자가 답할 때까지 그대로 남는다
+  // 그래서 (1) 화면이 어느 정도 그려졌고 (2) 프롬프트 없는 상태가 일정 시간
+  // **유지될 때** 비로소 쓴다.
+  const startupMs = options.startupMs == null ? 30000 : options.startupMs;
+  const settleMs = options.settleMs == null ? 4000 : options.settleMs;
+  const minScreen = options.minScreen == null ? 512 : options.minScreen;
+  const submitDelayMs = options.submitDelayMs == null ? 250 : options.submitDelayMs;
   const now = options.now || Date.now;
   const messages = new Map();
   let seq = 0;
@@ -33,7 +45,7 @@ function createBridge(options) {
     return {
       id: m.id, status: m.status, createdAt: m.createdAt, deliveredAt: m.deliveredAt || null,
       source: m.source, target: m.target, terminalId: m.terminalId || null,
-      launched: !!m.launched, error: m.error || null,
+      launched: !!m.launched, error: m.error || null, waitingOn: m.waitingOn || null,
     };
   }
 
@@ -70,7 +82,9 @@ function createBridge(options) {
       if (m.status !== 'queued') continue;
       if (time - m.createdAt > EXPIRE_MS) {
         m.status = 'failed';
-        m.error = '10분 안에 대상 세션이 준비되지 않았습니다';
+        m.error = m.waitingOn
+          ? '대상 세션이 ' + m.waitingOn + ' 에서 멈춰 있습니다. 그 터미널에서 먼저 응답해 주세요'
+          : '10분 안에 대상 세션이 준비되지 않았습니다';
         continue;
       }
       const target = findTarget(m);
@@ -83,9 +97,26 @@ function createBridge(options) {
       // 대기 중에도 스피너를 다시 그려서 lastAt 기준으로는 영영 잠잠해지지 않고,
       // 그래서 Claude -> Codex 전달만 10분 뒤 시간 초과로 실패했다.
       if (!target.status && time - (target.lastRealAt || target.lastAt) < quietMs) continue;
+      // 화면이 조용해도 모달 프롬프트가 떠 있으면 붙여넣기가 대화창이 아니라 **메뉴로**
+      // 들어간다(Codex 시작 직후의 업데이트 알림·폴더 신뢰 등). 겉으로는 전달된 것처럼
+      // 보이고 상대는 아무것도 못 받는다. 그래서 프롬프트가 걷힐 때까지 기다린다.
+      // list() 는 buf 를 안 싣는다. 화면을 보려면 원본 터미널이 필요하다.
+      const raw = typeof terminals.get === 'function' ? terminals.get(target.id) : null;
+      const screen = (raw && raw.buf) || target.buf || '';
+      const blocked = pendingPrompt(screen);
+      if (blocked) { m.waitingOn = blocked; m.clearSince = null; continue; }
+      // 아직 거의 아무것도 안 그려졌으면 '조용한' 게 아니라 '로딩 중' 이다.
+      if (screen.length < minScreen) { m.clearSince = null; continue; }
+      if (!m.clearSince) m.clearSince = time;
+      // 시작 직후에는 프롬프트가 늦게 뜬다. 잠깐 깨끗한 것만 보고 쓰면 그 틈에 끼인다.
+      if (time - target.startedAt < startupMs && time - m.clearSince < settleMs) continue;
+      m.waitingOn = null;
       try {
-        const payload = '\x1b[200~' + envelope(m) + '\x1b[201~\r';
-        if (!terminals.write(target.id, payload)) throw new Error('대상 터미널에 쓸 수 없습니다');
+        // 붙여넣기와 Enter 를 나눠 보낸다. Codex 는 201~ 바로 뒤에 붙인 CR 을 제출로
+        // 받지 않아 본문이 컴포저에 남는다(실측). 그게 Claude -> Codex 만 안 되던 이유다.
+        if (!submitPaste(terminals.write, target.id, envelope(m), submitDelayMs)) {
+          throw new Error('대상 터미널에 쓸 수 없습니다');
+        }
         m.status = 'delivered';
         m.deliveredAt = time;
       } catch (e) {
@@ -113,7 +144,7 @@ function createBridge(options) {
         title: cleanText(input.source.title).slice(0, 200), project: cleanText(input.source.project).slice(0, 260) },
       target: { provider: targetProvider, id: String(input.target.id),
         title: cleanText(input.target.title).slice(0, 200), cwd: String(input.target.cwd || '') },
-      text, launched: false, terminalId: null, error: null,
+      text, launched: false, terminalId: null, error: null, waitingOn: null, clearSince: null,
     };
     messages.set(m.id, m);
     trimHistory();

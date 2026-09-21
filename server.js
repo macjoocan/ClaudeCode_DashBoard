@@ -30,15 +30,17 @@ const codex = require('./codex.js');
 const usage = require('./usage.js');   // 세션 하나의 사용량 (카드·대화 헤더)
 const providerMetrics = require('./provider-metrics'); // Claude/Codex 공통 한도·기간 사용량
 const { createBridge } = require('./bridge');
-const { commandFor, pasted } = require('./session-actions');
+const { commandFor, submitPaste } = require('./session-actions');
 const { createHandoff } = require('./handoff');
+const { wtArgs } = require('./launch-args');
+const { pendingPrompt } = require('./tui-state');
 const scribe = require('./scribe');    // 마크다운 편집기 (SCRIBE 빌드물 + 파일 브리지)
 
 const HOOK_URL = `http://${'127.0.0.1'}:${Number(process.env.CC_LAUNCHER_PORT || 7788)}/api/hook`;
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CC_LAUNCHER_PORT || 7788);
-const API_VERSION = 3; // launchers use this to distinguish a stale in-memory server
+const API_VERSION = 4; // launchers use this to distinguish a stale in-memory server
 const CLAUDE_HOME = path.join(os.homedir(), '.claude');
 const PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects');
 const LIVE_DIR = path.join(CLAUDE_HOME, 'sessions'); // <pid>.json = 살아있는 세션 상태
@@ -74,6 +76,9 @@ const TRANSCRIPT_BYTES = 3 * 1024 * 1024;
 
 const SAFE_SLUG = /^[A-Za-z0-9._\-]+$/;
 const SAFE_ID = /^[A-Za-z0-9\-]+$/;
+// Codex 라이브 표시를 '지금 돌고 있다' 로 믿어주는 시간. 훅이 이벤트마다
+// 갱신하므로 실제로 쓰고 있으면 이 안에 들어온다.
+const EXTERNAL_LIVE_MS = 2 * 60 * 1000;
 
 const CLAUDE_BIN = findClaudeBin();
 const CODEX_BIN = codex.findCodexBin();
@@ -514,7 +519,7 @@ function codexCommand(action, sessionId) {
   return [`& ${q(CODEX_BIN)}`, ...codex.codexArgs(action, sessionId)].join(' ');
 }
 
-function launch({ action, cwd, sessionId, title, extra, provider }) {
+function launch({ action, cwd, sessionId, title, extra, provider, newWindow }) {
   if (!cwd || !fs.existsSync(cwd)) throw new Error(`폴더가 없습니다: ${cwd}`);
   if ((action === 'resume' || action === 'fork') && !SAFE_ID.test(String(sessionId || '')))
     throw new Error('세션 ID 가 올바르지 않습니다');
@@ -524,15 +529,14 @@ function launch({ action, cwd, sessionId, title, extra, provider }) {
   const tabTitle = title || path.basename(cwd);
 
   if (WT_BIN) {
-    spawn(WT_BIN, ['-w', '0', 'new-tab', '--title', tabTitle, '-d', cwd,
-                   'powershell.exe', '-NoExit', '-NoLogo', '-Command', inner],
+    spawn(WT_BIN, wtArgs({ cwd, title: tabTitle, inner, newWindow }),
           { detached: true, stdio: 'ignore' }).unref();
-    return 'wt';
+    return newWindow ? 'wt-window' : 'wt';
   }
   spawn('powershell.exe', ['-NoLogo', '-Command',
     `Start-Process powershell -ArgumentList '-NoExit','-NoLogo','-Command',${JSON.stringify(inner)} -WorkingDirectory ${JSON.stringify(cwd)}`,
   ], { detached: true, stdio: 'ignore' }).unref();
-  return 'powershell';
+  return 'powershell';   // Windows Terminal 이 없으면 원래부터 세션마다 창이 따로 뜬다
 }
 
 // 실행 중인 세션의 터미널 창을 앞으로 가져온다 (claude.exe → 부모 창 추적)
@@ -895,7 +899,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/api/launch' && req.method === 'POST') {
       const b = await readBody(req);
-      return json(res, 200, { ok: true, via: launch(b) });
+      return json(res, 200, { ok: true, via: launch(b), newWindow: !!b.newWindow });
     }
 
     if (url.pathname === '/api/focus' && req.method === 'POST') {
@@ -942,6 +946,26 @@ const server = http.createServer(async (req, res) => {
     }
 
     // 붙여넣은 이미지. JSON 이 아니라 원본 바이트로 받는다.
+    // 터미널에 찍힌 .md 경로를 Ctrl+클릭했을 때 쓰는 경로 확인.
+    //
+    // 브라우저는 그 경로가 진짜 있는지, 상대경로가 어느 폴더 기준인지 모른다.
+    // 터미널의 cwd 를 기준으로 풀어서 폴더와 파일 이름을 돌려준다.
+    // 여는 것 자체는 SCRIBE 의 보관 폴더를 그 폴더로 바꿔서 한다.
+    if (url.pathname === '/api/md/resolve' && req.method === 'POST') {
+      const b = await readBody(req);
+      const raw = String(b.path || '').trim().replace(/^["'`]|["'`]$/g, '');
+      if (!raw) throw new Error('경로가 비어 있습니다');
+      if (!/\.(md|markdown)$/i.test(raw)) throw new Error('마크다운 파일이 아닙니다');
+      const base = String(b.cwd || '');
+      const full = path.resolve(path.isAbsolute(raw) ? raw : path.join(base, raw));
+      let st;
+      try { st = fs.statSync(full); } catch { throw new Error('파일을 찾지 못했습니다: ' + full); }
+      if (!st.isFile()) throw new Error('파일이 아닙니다: ' + full);
+      return json(res, 200, {
+        ok: true, full, dir: path.dirname(full), file: path.basename(full),
+      });
+    }
+
     if (url.pathname === '/api/md/image' && req.method === 'POST') {
       const raw = await readRawBody(req, PASTE_MAX);
       const saved = scribe.saveImage(String(url.searchParams.get('p') || ''), raw);
@@ -1300,8 +1324,14 @@ const server = http.createServer(async (req, res) => {
       if (!inf.status && Date.now() - Number(t.lastRealAt || t.lastAt || 0) < 1500) {
         throw new Error('터미널 출력이 멈춘 뒤 실행해 주세요');
       }
+      // 모달 프롬프트가 떠 있으면 /compact 가 대화창이 아니라 메뉴로 들어간다.
+      const ctxBlocked = pendingPrompt(t.buf);
+      if (ctxBlocked) {
+        throw new Error('이 세션이 ' + ctxBlocked + ' 에서 멈춰 있습니다. 터미널에서 먼저 응답해 주세요');
+      }
       if (b.action === 'compact') {
-        if (!terminals.write(id, pasted(commandFor(inf.provider, 'compact'))))
+        // 붙여넣기와 Enter 를 나눠 보낸다 - Codex 는 201~ 뒤의 CR 을 제출로 안 받는다.
+        if (!submitPaste(terminals.write, id, commandFor(inf.provider, 'compact')))
           throw new Error('컨텍스트 압축 명령을 입력하지 못했습니다');
         return json(res, 200, { ok: true, action: 'compact' });
       }
@@ -1334,7 +1364,16 @@ const server = http.createServer(async (req, res) => {
       if (source.s.provider === target.s.provider) throw new Error('Claude와 Codex 사이에서만 전달할 수 있습니다');
       const embedded = terminals.list().find(t => t.alive && t.provider === target.s.provider
         && t.sessionId === target.s.id);
-      if (target.s.live && !embedded) {
+      // Codex 의 라이브 표시는 훅이 남긴 파일이고, 세션이 끝나도 최대 하루를 버틴다
+      // (그 파일의 pid 는 훅 프로세스의 부모라 생사 판정에 쓸 수 없다). 그대로 믿으면
+      // 최근에 한 번이라도 돌린 Codex 세션이 전부 '외부 창에서 실행 중' 이 되어 전달이
+      // 통째로 막힌다 - Claude -> Codex 만 안 되던 이유 중 하나다.
+      // 그래서 Codex 는 **최근에 갱신된 표시만** 믿는다. Claude 는 pid 로 생사를
+      // 확인하므로 예전처럼 그대로 믿는다.
+      const liveAt = Number((target.s.live && target.s.live.at) || 0);
+      const trustLive = target.s.provider !== 'codex'
+        || (liveAt > 0 && Date.now() - liveAt < EXTERNAL_LIVE_MS);
+      if (target.s.live && trustLive && !embedded) {
         throw new Error('대상 세션이 외부 창에서 실행 중입니다. 대시보드 터미널로 연 뒤 전달해 주세요');
       }
       const message = await sessionBridge.send({

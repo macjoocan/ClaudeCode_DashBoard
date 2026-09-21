@@ -1,6 +1,7 @@
 'use strict';
 
-const { pasted } = require('./session-actions');
+const { submitPaste } = require('./session-actions');
+const { pendingPrompt } = require('./tui-state');
 
 const SUMMARY_PROMPT = `[AI 세션 전환 요청]
 현재까지의 작업을 반대편 코딩 AI가 바로 이어받을 수 있도록 인수인계 요약을 작성해 주세요.
@@ -52,7 +53,16 @@ function createHandoff(options) {
   const pollMs = options.pollMs || 1000;
   const quietMs = options.quietMs || 1500;
   const summaryTimeoutMs = options.summaryTimeoutMs || 10 * 60 * 1000;
-  const targetTimeoutMs = options.targetTimeoutMs || 20000;
+  // 대상 CLI 가 부팅을 끝낼 때까지 넉넉히 기다린다. 예전 20초는 Claude 시작 화면이
+  // 다 뜨기도 전에 지나가서, 인수인계가 부팅 중인 TUI 로 들어가 그대로 버려졌다
+  // (job 은 sent 인데 대상 화면엔 아무것도 없었다 - 실측).
+  const targetTimeoutMs = options.targetTimeoutMs || 60000;
+  // bridge 와 같은 기준: 화면이 어느 정도 그려졌고, 프롬프트 없는 상태가 유지될 것.
+  const settleMs = options.settleMs == null ? 4000 : options.settleMs;
+  const minScreen = options.minScreen == null ? 512 : options.minScreen;
+  // 붙여넣기가 화면에 반영된 뒤 Enter 를 보낸다. 너무 빠르면 컴포저가 아직
+  // 붙여넣기를 처리하는 중이라 제출이 씹힌다.
+  const submitDelayMs = options.submitDelayMs == null ? 250 : options.submitDelayMs;
   const jobs = new Map();
   let seq = 0;
   let closed = false;
@@ -80,12 +90,28 @@ function createHandoff(options) {
 
   async function waitForTarget(job, target) {
     const deadline = Date.now() + targetTimeoutMs;
+    let clearSince = null;
     while (!closed && Date.now() < deadline) {
       await sleep(pollMs);
       if (target.exitCode != null) throw new Error('전환할 AI 세션이 시작 중 종료되었습니다');
-      if (target.buf && Date.now() - Number(target.lastRealAt || target.lastAt || 0) >= quietMs) return;
+      const screen = target.buf || '';
+      // 모달 프롬프트(업데이트 알림·폴더 신뢰 등)가 떠 있으면 아직 준비된 게 아니다.
+      // 그대로 쓰면 인수인계 본문이 메뉴로 들어가고 Enter 가 항목을 골라버린다.
+      // 화면이 거의 안 그려진 것도 '조용한' 게 아니라 '부팅 중' 이다.
+      if (pendingPrompt(screen) || screen.length < minScreen) { clearSince = null; continue; }
+      if (!clearSince) clearSince = Date.now();
+      if (Date.now() - clearSince < settleMs) continue;
+      if (Date.now() - Number(target.lastRealAt || target.lastAt || 0) >= quietMs) return;
     }
     if (closed) throw new Error('대시보드가 종료되었습니다');
+    // 제한 시간이 지나도 프롬프트가 그대로면 쓰면 안 된다. 인수인계 본문이 메뉴로
+    // 들어가고 Enter 가 항목을 골라버린다 - 조용히 잘못 눌리느니 실패가 낫다.
+    const blocked = pendingPrompt(target.buf);
+    if (blocked) throw new Error('전환할 AI 세션이 ' + blocked + ' 에서 멈춰 있습니다. 그 터미널에서 먼저 응답해 주세요');
+    // 화면이 여전히 비어 있으면 아직 부팅 중이다. 지금 쓰면 그대로 버려진다.
+    if ((target.buf || '').length < minScreen) {
+      throw new Error('전환할 AI 세션이 아직 준비되지 않았습니다 (시작 화면이 뜨지 않음)');
+    }
     // 일부 CLI/테마는 준비 완료 뒤에도 커서를 계속 갱신한다. 제한 시간이 지나면
     // 살아있는 PTY에는 전달을 시도하되, 종료된 경우만 실패시킨다.
     if (target.exitCode != null) throw new Error('전환할 AI 세션을 시작하지 못했습니다');
@@ -101,7 +127,8 @@ function createHandoff(options) {
       });
       job.targetTermId = target.id;
       await waitForTarget(job, target);
-      if (!terminals.write(target.id, pasted(envelope(job, summary)))) {
+      // 붙여넣기와 Enter 를 나눠 보낸다 - Codex 는 201~ 뒤에 붙인 CR 을 제출로 안 받는다.
+      if (!submitPaste(terminals.write, target.id, envelope(job, summary), submitDelayMs)) {
         throw new Error('전환할 AI 세션에 인수인계를 입력하지 못했습니다');
       }
       job.status = 'sent';
@@ -123,6 +150,13 @@ function createHandoff(options) {
     if (!info.status && Date.now() - Number(source.lastRealAt || source.lastAt || 0) < quietMs) {
       throw new Error('터미널 출력이 멈춘 뒤 전환해 주세요');
     }
+    // 원본도 모달 프롬프트에 걸려 있을 수 있다(Codex 시작 직후의 업데이트 알림 등).
+    // 그대로 쓰면 요약 요청이 대화창이 아니라 메뉴로 들어가고 Enter 가 항목을 고른다.
+    // 대상만 막아두면 여기서 똑같이 당한다.
+    const sourceBlocked = pendingPrompt(source.buf);
+    if (sourceBlocked) {
+      throw new Error('이 세션이 ' + sourceBlocked + ' 에서 멈춰 있습니다. 터미널에서 먼저 응답한 뒤 전환해 주세요');
+    }
     const before = lastAssistant(await readTranscript({
       sourceProvider: info.provider, sourceSessionId: info.sessionId,
       cwd: info.cwd, sourceTermId: info.id,
@@ -134,7 +168,7 @@ function createHandoff(options) {
       targetTermId: null, error: null,
     };
     jobs.set(job.id, job);
-    if (!terminals.write(info.id, pasted(SUMMARY_PROMPT))) {
+    if (!submitPaste(terminals.write, info.id, SUMMARY_PROMPT, submitDelayMs)) {
       jobs.delete(job.id);
       throw new Error('원본 세션에 요약 요청을 입력하지 못했습니다');
     }

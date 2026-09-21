@@ -384,3 +384,47 @@ test('doctor 는 경로에 공백이 있는 codex 실행 파일도 부른다 (cm
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Codex v0.155 부터 rollout 형식이 바뀌었다(실측 2026-09-21).
+// 옛 파서는 새 형식에서 0개를 돌려줬고, 그 탓에 AI 전환이 요약을 못 찾아
+// 'summarizing' 에서 멈추고 Codex 대화 보기도 빈 화면이 됐다.
+test('parseRollout 은 새 형식(item_completed)도 읽는다', () => {
+  const p = writeRollout([
+    { timestamp: '2026-09-21T07:27:14.576Z', type: 'event_msg', payload: {
+      type: 'item_completed',
+      item: { type: 'UserMessage', content: [{ type: 'text', text: '이거 해줘' }] } } },
+    { timestamp: '2026-09-21T07:27:20.000Z', type: 'event_msg', payload: {
+      type: 'item_completed',
+      item: { type: 'AgentMessage', content: [{ type: 'text', text: '했습니다' }] } } },
+    { timestamp: '2026-09-21T07:27:21.000Z', type: 'event_msg', payload: {
+      type: 'item_completed',
+      item: { type: 'Reasoning', content: [{ type: 'text', text: '속으로 생각' }] } } },
+  ]);
+  const out = codex.parseRollout(p, 40);
+  assert.deepEqual(out.msgs.map(m => m.role), ['user', 'assistant']);
+  assert.equal(out.msgs[0].text, '이거 해줘');
+  assert.equal(out.msgs[1].text, '했습니다');
+});
+
+test('parseRollout 은 옛 형식도 그대로 읽는다 (지난 세션 보호)', () => {
+  const p = writeRollout([
+    { timestamp: '2026-08-17T04:34:30.965Z', type: 'event_msg',
+      payload: { type: 'user_message', message: '옛날 질문' } },
+    { timestamp: '2026-08-17T04:38:25.784Z', type: 'event_msg',
+      payload: { type: 'agent_message', message: '옛날 답' } },
+  ]);
+  const out = codex.parseRollout(p, 40);
+  assert.deepEqual(out.msgs.map(m => m.role), ['user', 'assistant']);
+});
+
+test('parseRollout 은 새 형식의 도구 실행을 tool 로 싣는다', () => {
+  const p = writeRollout([
+    { timestamp: '2026-09-21T07:27:14.576Z', type: 'event_msg', payload: {
+      type: 'item_completed',
+      item: { type: 'CommandExecution', command: 'git status' } } },
+  ]);
+  const out = codex.parseRollout(p, 40);
+  assert.equal(out.msgs.length, 1);
+  assert.equal(out.msgs[0].role, 'tool');
+  assert.ok(out.msgs[0].text.indexOf('git status') >= 0);
+});

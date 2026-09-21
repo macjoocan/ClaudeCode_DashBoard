@@ -443,7 +443,11 @@
       cols: info.cols, rows: info.rows,
       fontFamily: '"Cascadia Mono", Consolas, "D2Coding", monospace',
       fontSize: 13, lineHeight: 1.2,
-      cursorBlink: true, allowProposedApi: true,
+      // Codex TUI 는 대기 중에도 커서 모양 제어열(ESC [0 q)을 계속 보내 깜빡임 위상을
+      // 초기화한다. Codex 패인에서는 꺼 둔다.
+      // 주의: 생성자에 false 가 전달되는 것까지는 확인했지만, xterm 의 options 읽기가
+      // 계속 true 를 돌려줘 화면에서의 효과는 확인하지 못했다.
+      cursorBlink: info.provider !== 'codex', allowProposedApi: true,
       scrollback: 8000, theme: THEME
     });
     var fit = new window.FitAddon.FitAddon();
@@ -451,7 +455,7 @@
     try { term.loadAddon(new window.WebLinksAddon.WebLinksAddon()); } catch (e) {}
     term.open(body);
 
-    var v = { el: el, head: head, term: term, fit: fit, ws: null, info: info, alive: info.alive };
+    var v = { el: el, head: head, body: body, term: term, fit: fit, ws: null, info: info, alive: info.alive };
     // Explicit navigation wins over the pending initial-replay scroll.
     ['wheel', 'pointerdown', 'keydown'].forEach(function (name) {
       body.addEventListener(name, function () { v.replayScroll = null; }, { passive: true });
@@ -464,11 +468,60 @@
     term.onData(function (d) { sendMsg(v, { t: 'i', d: d }); });
     term.onResize(function (size) { sendMsg(v, { t: 'r', c: size.cols, r: size.rows }); });
 
+    registerMdLinks(v);
     paneHead(v);
     wireClipboard(v, body);
     wireDrag(v);
     connect(v);
     return v;
+  }
+
+  // 터미널에 찍힌 .md 경로를 Ctrl+클릭하면 문서 탭에서 그 폴더를 연다.
+  //
+  // Claude Code 도 Codex 도 문서를 만들면 경로를 찍어준다. 그걸 손으로 복사해
+  // 폴더를 고르는 대신 바로 갈 수 있게 한다. 상대경로는 그 터미널의 cwd 기준이라
+  // 서버가 풀어준다(/api/md/resolve).
+  //
+  // 한계: 공백이 든 경로(C:\Program Files\...)는 어디서 끊길지 알 수 없어 잡지 않는다.
+  //
+  //   [드라이브: 또는 구분자로 시작]?  (폴더 구분자)*  이름.md
+  var MD_PATH_RE = /(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|[\\/])?(?:[^\s"'`<>|*?]+[\\/])*[^\s"'`<>|*?]+\.(?:md|markdown)(?![A-Za-z0-9_])/g;
+
+  function registerMdLinks(v) {
+    if (!v.term.registerLinkProvider) return;
+    v.term.registerLinkProvider({
+      provideLinks: function (y, cb) {
+        var line = v.term.buffer.active.getLine(y - 1);
+        if (!line) { cb(undefined); return; }
+        var text = line.translateToString(true);
+        var links = [], m;
+        MD_PATH_RE.lastIndex = 0;
+        while ((m = MD_PATH_RE.exec(text)) !== null) {
+          // 경로를 감싼 괄호·따옴표와 문장 끝 기호는 경로가 아니다.
+          // 앞을 깎은 만큼 밑줄 위치도 밀어야 엉뚱한 칸에 그어지지 않는다.
+          var raw = m[0];
+          var lead = raw.match(/^[([{'"`]+/);
+          if (lead) raw = raw.slice(lead[0].length);
+          raw = raw.replace(/[)\]},.;:'"`]+$/, '');
+          if (!raw || raw.length < 4) continue;
+          links.push(mdLink(v, raw, m.index + (lead ? lead[0].length : 0), y));
+        }
+        cb(links.length ? links : undefined);
+      }
+    });
+  }
+
+  function mdLink(v, raw, index, y) {
+    return {
+      text: raw,
+      range: { start: { x: index + 1, y: y }, end: { x: index + raw.length, y: y } },
+      activate: function (ev) {
+        // Ctrl(맥은 Cmd) 없이 누른 건 그냥 드래그 선택이다. 건드리지 않는다.
+        if (!ev || !(ev.ctrlKey || ev.metaKey)) return;
+        if (CC.openMd) CC.openMd(raw, v.info.cwd);
+        else note('문서 탭을 쓸 수 없습니다', true);
+      }
+    };
   }
 
   // 패인 머리글: 세션 이름 · 프로젝트 · 상태 + 새로고침 / 재시작 / 단독 보기 / 닫기
@@ -857,23 +910,69 @@
     }, function (e) { note('받기 실패: ' + e.message, true); });
   }
 
+  // 들어오는 출력을 한 프레임에 한 번만 써 넣는다.
+  //
+  // Codex TUI 는 한 프레임을 작은 덩어리 여러 개로 흘려보낸다. 덩어리마다 write()
+  // 하면 xterm 이 반쯤 그려진 화면을 그대로 렌더해서 입력 줄이 번쩍인다.
+  // 한 프레임치를 모아 한 번에 쓰면 완성된 화면만 그려진다.
+  var OUT_MAX = 256 * 1024;   // 이만큼 쌓이면 프레임을 기다리지 않고 넘긴다
+
+  function flushLive(v) {
+    if (v.outRaf) { cancelAnimationFrame(v.outRaf); v.outRaf = 0; }
+    var chunk = (v.outQ || []).join('');
+    v.outQ = []; v.outLen = 0;
+    if (!chunk || !views.has(v.info.id)) return;
+    try { v.term.write(chunk); } catch (e) {}
+  }
+
+  function writeLive(v, d) {
+    (v.outQ || (v.outQ = [])).push(d);
+    v.outLen = (v.outLen || 0) + d.length;
+    // 다른 탭을 보고 있으면 requestAnimationFrame 이 돌지 않는다. 그대로 두면
+    // 큐가 무한정 자란다. 일정량 넘으면 프레임을 기다리지 않고 바로 써 넣는다
+    // (xterm 이 내부에서 버퍼링하므로 화면이 안 보여도 안전하다).
+    if (v.outLen > OUT_MAX) { flushLive(v); return; }
+    if (v.outRaf) return;
+    v.outRaf = requestAnimationFrame(function () { v.outRaf = 0; flushLive(v); });
+  }
+
+  // 대기 중인 출력을 버린다 (PTY 교체·재접속·패인 제거처럼 화면이 갈릴 때).
+  function dropPending(v) {
+    if (v.outRaf) { cancelAnimationFrame(v.outRaf); v.outRaf = 0; }
+    v.outQ = []; v.outLen = 0;
+  }
+
+  // 스크롤백 복원이 끝나면 화면을 다시 보여준다. 어떤 경로로 끝나든 반드시 벗긴다 -
+  // 여기서 빠지면 패인이 빈 화면으로 남는다.
+  function endReplay(v) {
+    if (v.replayTimer) { clearTimeout(v.replayTimer); v.replayTimer = 0; }
+    if (v.body) v.body.classList.remove('replaying');
+  }
+
   function writeOutput(v, m, ws) {
-    if (!m.replay) { v.term.write(m.d); return; }
+    if (!m.replay) { writeLive(v, m.d); return; }
     var token = {};
     v.replayScroll = token;
+    // 스크롤백(최대 512KB)을 그대로 써 넣으면 xterm 이 처음부터 순서대로 그려서,
+    // 첫 화면부터 아래로 주르륵 스크롤하는 게 그대로 보인다. 다 쓸 때까지 감춘다.
+    // display:none 이 아니라 visibility 여야 레이아웃이 남아 fit() 이 제대로 된다.
+    if (v.body) v.body.classList.add('replaying');
+    v.replayTimer = setTimeout(function () { endReplay(v); }, 4000);   // 콜백이 안 와도 풀어준다
     // write() parses asynchronously: scrolling immediately after write() is too early.
     v.term.write(m.d, function () {
       requestAnimationFrame(function () {
-        if (v.ws !== ws || v.replayScroll !== token || !views.has(v.info.id)) return;
+        if (v.ws !== ws || v.replayScroll !== token || !views.has(v.info.id)) { endReplay(v); return; }
         v.replayScroll = null;
         fitView(v);
         v.term.scrollToBottom();
+        endReplay(v);
       });
     });
   }
 
   function connect(v) {
     v.replayScroll = null;
+    dropPending(v); endReplay(v);   // 옛 소켓의 대기 출력이 새 복원 위에 쏟아지지 않게
     var ws = new WebSocket('ws://' + location.host + '/term?id=' + encodeURIComponent(v.info.id));
     v.ws = ws;
     ws.onmessage = function (ev) {
@@ -884,6 +983,7 @@
         writeOutput(v, m, ws);
       } else if (m.t === 'reset') {
         v.replayScroll = null;
+        dropPending(v); endReplay(v);      // 옛 PTY 의 대기 출력을 새 화면에 쏟지 않는다
         v.term.reset();                    // 서버가 PTY 를 갈아끼웠다
       } else if (m.t === 'm') {
         // /api/terms가 덧붙인 fav/slug는 PTY 메타데이터에 없으므로 보존한다.
@@ -987,6 +1087,7 @@
   function drop(id) {
     var v = views.get(id);
     if (!v) return;
+    dropPending(v); endReplay(v);
     try { if (v.ws) v.ws.close(); } catch (e) {}
     try { v.term.dispose(); } catch (e) {}
     if (v.el.parentNode) v.el.parentNode.removeChild(v.el);
