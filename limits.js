@@ -27,8 +27,31 @@ const TTL_FAIL = 5 * 60 * 1000;   // 그냥 실패는 5분
 const TTL_429 = 20 * 60 * 1000;   // 한도 초과는 훨씬 길게 - 더 두드리면 더 막힌다
 const TIMEOUT = 15000;
 
+// 캐시를 파일에도 남긴다.
+//
+// 메모리에만 두면 서버를 다시 띄울 때마다 곧장 다시 물어본다. 오늘 대시보드를 여러 번
+// 재시작했더니 그 때문에 429 를 맞았다. 재시작이 백오프를 지우면 안 된다.
+// 마지막으로 성공한 값도 같이 남긴다 - 못 가져올 때 화면을 `—` 로 비우는 대신
+// 그 값을 보여주려면 재시작 뒤에도 들고 있어야 한다.
+const CACHE_FILE = path.join(os.homedir(), '.claude', '.cc-launcher-limits.json');
+
 let cache = { at: 0, ok: false, data: null };
+let lastGood = null;              // { at, data } - 마지막으로 성공한 응답의 본문
 let inflight = null;
+
+try {
+  const saved = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+  if (saved && typeof saved.at === 'number') cache = { at: saved.at, ok: !!saved.ok, data: saved.data || null };
+  if (saved && saved.lastGood && saved.lastGood.data) lastGood = saved.lastGood;
+} catch (e) { /* 없거나 깨졌으면 그냥 새로 시작한다 */ }
+
+function persist() {
+  try {
+    fs.writeFileSync(CACHE_FILE, JSON.stringify({
+      at: cache.at, ok: cache.ok, data: cache.data, lastGood,
+    }), 'utf8');
+  } catch (e) { /* 못 써도 동작에는 지장이 없다 */ }
+}
 
 // 자격증명을 읽는다. accessToken 은 이 함수 밖으로 값이 나가지 않게 조심해서 쓴다.
 function readCredential() {
@@ -171,24 +194,38 @@ async function load() {
 // 캐시를 앞에 둔다. 화면이 얼마나 자주 물어도 endpoint 는 위 TTL 만큼만 두드린다.
 const FORCE_MIN = 30 * 1000;   // 손으로 눌러도 이만큼은 쉰다
 
+// 결과를 캐시에 넣고 파일에 남긴다.
+//
+// 못 가져왔으면 **마지막으로 성공한 값**을 함께 딸려 보낸다. 429 는 20분을 쉬는데
+// 그동안 화면이 `—` 로만 남으면 "잘 보이던 게 사라졌다" 로 보인다. 지난 값이라도
+// 언제 것인지 밝혀서 보여주는 편이 낫다 - 한도는 분 단위로 급변하지 않는다.
+function withStale(r) {
+  if (!r || r.ok || !lastGood || r.stale) return r;
+  return Object.assign({}, r, { stale: lastGood });
+}
+
+function finish(r) {
+  if (r.ok && r.data) lastGood = { at: Date.now(), data: r.data };
+  r = withStale(r);
+  cache = { at: Date.now(), ok: !!r.ok, data: r };
+  inflight = null;
+  persist();
+  return r;
+}
+
 function limits(opts) {
   const force = !!(opts && opts.force);
   const ttl = force ? FORCE_MIN
     : (cache.ok ? TTL_OK
       : (cache.data && cache.data.rateLimited ? TTL_429 : TTL_FAIL));
-  if (cache.data && Date.now() - cache.at < ttl) return Promise.resolve(cache.data);
+  // 같은 것을 돌려줄 때도 지난 값을 같이 붙인다. 429 는 20분을 쉬는데
+  // 그 동안은 여기로만 나간다 - 여기서 빼먹으면 화면은 계속 비어 있다.
+  if (cache.data && Date.now() - cache.at < ttl) return Promise.resolve(withStale(cache.data));
   if (inflight) return inflight;
 
-  inflight = load().then(r => {
-    cache = { at: Date.now(), ok: r.ok, data: r };
-    inflight = null;
-    return r;
-  }).catch(e => {
-    const r = { ok: false, reason: String((e && e.message) || e) };
-    cache = { at: Date.now(), ok: false, data: r };
-    inflight = null;
-    return r;
-  });
+  inflight = load().then(r => finish(r)).catch(e => finish({
+    ok: false, reason: String((e && e.message) || e),
+  }));
   return inflight;
 }
 
