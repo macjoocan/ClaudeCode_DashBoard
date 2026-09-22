@@ -940,6 +940,101 @@ Codex 쪽에서 한 번 변환이 필요하다: **Codex 의 `input_tokens` 는 `
 캐시하되, rollout 은 끝 256KB 만 읽는다 (실측: 마지막 `token_count` 는 EOF 에서
 3KB 안쪽이다).
 
+## 로컬 두뇌 (/api/ask)
+
+화면이 `fetch` 한 번으로 **스키마에 맞는 JSON** 을 받아 간다. "Claude 가 화면을
+만들고 GPT 가 머리를 맡는" 구성을 **API 키 없이** 한다 - 구독 로그인을 그대로 쓴다.
+
+```js
+const r = await fetch('/api/ask', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ provider: 'codex', prompt: '이 수치 뭐가 이상해?', schema }),
+}).then((x) => x.json());
+// { ok: true, result: { ... }, tokens: 19689 }
+```
+
+실측(2026-09-23, 왕복 확인):
+
+| | 걸린 시간 | 토큰 |
+|---|---|---|
+| `codex exec --json --output-schema` | **8.8초** | 19,689 |
+| `claude -p --output-format json` | **56초** | 3,628 |
+
+계획 단계의 짐작(codex 20초 / claude 12초)과 뒤집혔다. 기본 타임아웃을 180초로 둔
+이유가 이것이다 - 60초면 정상 호출이 타임아웃으로 죽는다.
+
+### 한도 가드
+
+이 엔드포인트는 **화면이 부른다.** 화면을 잘못 짜면 무한 호출이 돌고, 그러면 하루치
+구독 한도가 날아간다. 그래서 엔드포인트보다 가드를 먼저 만들었다.
+
+| | 기본값 | 환경변수 |
+|---|---|---|
+| 동시 실행 | 1개 (넘으면 큐에서 기다린다) | — |
+| 분당 호출 | 5회 | `CC_ASK_PER_MINUTE` |
+| 일일 토큰 | 300,000 | `CC_ASK_DAY_TOKENS` |
+| 결과 캐시 | 10분 | `CC_ASK_CACHE_MS` |
+| 타임아웃 | 180초 | `CC_ASK_TIMEOUT_MS` |
+
+판정은 싼 것부터 본다: 캐시 적중 -> 일일 토큰 -> 분당 호출 -> 슬롯. 무한 루프가
+돌면 분당 5회 x 24k = 120k/분이므로 **약 2.5분**이면 일일 상한에 걸려 멈춘다.
+
+- **거부는 이유를 달고 나간다.** `{ ok:false, reason, message }` 로 돌려주고 상태도
+  구분한다 - 잘못 부른 것은 **400**, 상한은 **429**, 자식이 못 답한 것은 **502**.
+  섞으면 화면이 "좀 쉬었다 다시" 로 읽고, 고칠 것을 안 고친 채 재시도 루프를 돈다.
+- **일일 원장은 파일에 남긴다** (`~/.claude/.cc-launcher-ask.json`). 메모리에만 두면
+  재시작이 상한을 지운다. 우리가 막으려는 것이 "화면이 서버를 두들긴다" 이고 그건
+  서버를 재시작하게도 만든다. (`limits.js` 가 429 백오프로 같은 함정을 밟았다.)
+- **결과 캐시는 메모리에만** 둔다. TTL 이 분 단위라 잃어도 싸다.
+- **일일 상한은 한 번 넘칠 수 있다.** 토큰 수는 호출이 끝나야 알 수 있어 사전 판정은
+  "지금까지 쓴 합계" 로 한다. 최대 초과폭은 호출 1회(약 24k, 8%). 프롬프트 길이로
+  미리 추정하는 쪽은 추정이 틀리면 멀쩡한 호출을 막아서 택하지 않았다.
+
+### 여기서 실제로 터진 것 셋
+
+**1. 자식을 못 띄우면 서버가 통째로 죽었다.** `spawn` 실패는 `close` 가 아니라
+`error` 로 온다. 안 받으면 unhandled `error` 로 프로세스가 끝난다 - 화면이 부르는
+엔드포인트가 대시보드의 터미널 세션까지 같이 날린다는 뜻이다(실측: `spawn claude
+ENOENT` 로 죽었다). 이제 `error` 를 받아 502 로 돌려준다.
+
+**2. Windows 에서 `claude` 는 없다. `claude.cmd` 다.** 그리고 Node 는 `.cmd` 직접
+실행을 막는다(실측: `spawn EINVAL`). `.cmd`/`.bat` 일 때만 `shell` 을 쓰고, 경로는
+서버가 이미 찾아 둔 `CLAUDE_BIN`/`CODEX_BIN` 을 넘긴다.
+
+**3. 프롬프트를 argv 에 실으면 명령 주입이 된다.** 프롬프트는 브라우저에서 오는
+값인데 `shell` 을 거치면 그대로 셸 문자열이 된다. 그래서 프롬프트는 **stdin 으로만**
+넘긴다(둘 다 지원한다 - codex 는 "instructions are read from stdin", claude 는 `-p`
+가 파이프용이다). Windows 명령줄 길이 제한(약 32KB)도 같이 사라진다.
+
+### codex 의 JSONL 봉투 (실측)
+
+rollout 파일과 **같은 모양일 거라 짐작했는데 아니었다.** 최상위 `type` 이 점 표기다.
+
+```
+{"type":"thread.started","thread_id":...}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"type":"error","message":"Skill descriptions..."}}
+{"type":"item.completed","item":{"type":"agent_message","text":"..."}}
+{"type":"turn.completed","usage":{"input_tokens":19593,"cached_input_tokens":12160,...}}
+```
+
+- 답은 `item.completed` 중 `item.type === 'agent_message'` 의 `text`
+- 토큰은 `turn.completed.usage` 에 **한 번만** 온다. 캐시로 읽은 입력도 한도를
+  먹으므로 빼지 않는다
+- `item.type === 'error'` 가 섞여 온다(스킬 설명이 잘렸다는 경고). 치명적이지 않아
+  실패로 치지 않되, **답으로 착각해서도 안 된다**
+
+### 파일
+
+| | |
+|---|---|
+| `ask-guard.js` | 받아도 되나 판정 · 큐 · 원장 · 캐시. 아무것도 실행하지 않는다 |
+| `ask-run.js` | CLI 실행 · 타임아웃 · 취소 · 토큰 파싱. 상한은 모른다 |
+| `ask.js` | 둘을 잇는다. **실행기는 여기서만 불린다** - 가드를 우회할 길이 없다 |
+
+가드가 아무것도 실행하지 않는 이유가 이것이다. 자식 프로세스 없이 상한을 시험할 수
+있어야 "가드가 실제로 막는지" 를 토큰 한 톨 안 쓰고 확인한다.
+
 ## 세션에서 직접 보내기 (bridge-send.js)
 
 Claude Code 의 `SendMessage`/`ListAgents` 는 **Claude Code 세션끼리만** 안다. Codex 세션

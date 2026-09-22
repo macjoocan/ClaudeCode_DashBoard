@@ -35,7 +35,10 @@ const { createHandoff } = require('./handoff');
 const { wtArgs } = require('./launch-args');
 const { taskkillOutcome } = require('./kill-result');
 const { pendingPrompt } = require('./tui-state');
-const scribe = require('./scribe');    // 마크다운 편집기 (SCRIBE 빌드물 + 파일 브리지)
+const scribe = require('./scribe');
+const { createGuard } = require('./ask-guard');
+const { createRunner } = require('./ask-run');
+const { createAsk } = require('./ask');    // 마크다운 편집기 (SCRIBE 빌드물 + 파일 브리지)
 
 const HOOK_URL = `http://${'127.0.0.1'}:${Number(process.env.CC_LAUNCHER_PORT || 7788)}/api/hook`;
 
@@ -84,6 +87,37 @@ const EXTERNAL_LIVE_MS = 2 * 60 * 1000;
 const CLAUDE_BIN = findClaudeBin();
 const CODEX_BIN = codex.findCodexBin();
 const WT_BIN = findBin('wt.exe');
+
+// 로컬 두뇌 (/api/ask). 구독 로그인 그대로 쓰므로 API 키가 없다.
+//
+// 기본값은 보수적으로 잡았다 - 이 엔드포인트는 화면이 부르고, 화면을 잘못 짜면
+// 무한 호출이 돈다. 호출당 약 20k 토큰(실측: codex 19,689 / claude 3,628)이라
+// 300k 면 하루 15회 안팎이다. 환경변수로 올릴 수 있게 두되 기본은 넘치지 않는 쪽.
+const ASK_LEDGER = path.join(os.homedir(), '.claude', '.cc-launcher-ask.json');
+const askGuard = createGuard({
+  now: () => Date.now(),
+  load() {
+    try { return JSON.parse(fs.readFileSync(ASK_LEDGER, 'utf8')); } catch (e) { return null; }
+  },
+  save(o) {
+    try { fs.writeFileSync(ASK_LEDGER, JSON.stringify(o), 'utf8'); } catch (e) { /* 못 써도 이번 판정엔 지장 없다 */ }
+  },
+  limits: {
+    perMinute: Number(process.env.CC_ASK_PER_MINUTE || 5),
+    perDayTokens: Number(process.env.CC_ASK_DAY_TOKENS || 300000),
+    cacheTtlMs: Number(process.env.CC_ASK_CACHE_MS || 10 * 60 * 1000),
+  },
+});
+const ask = createAsk({
+  guard: askGuard,
+  runner: createRunner({
+    spawn: require('child_process').spawn,
+    // 이미 찾아 둔 경로를 넘긴다. Windows 에서 'claude' 는 없고 claude.cmd 다.
+    bin: { claude: CLAUDE_BIN, codex: CODEX_BIN },
+    // 실측: claude -p 한 번이 56초 걸렸다. 60초로 두면 정상 호출이 타임아웃으로 죽는다.
+    timeoutMs: Number(process.env.CC_ASK_TIMEOUT_MS || 180000),
+  }),
+});
 
 const sessionBridge = createBridge({
   terminals,
@@ -1347,6 +1381,19 @@ const server = http.createServer(async (req, res) => {
     // ------- 토큰 사용량 -------
     // 사용 한도. 비공식 endpoint 라 실패해도 200 으로 ok:false 만 돌려준다 -
     // 헤더 바가 오류로 깨지면 안 된다.
+    // 로컬 두뇌. 화면이 fetch 한 번으로 스키마에 맞는 JSON 을 받아 간다.
+    //
+    // 가드를 우회할 길은 두지 않는다 - 실행기는 ask() 안에서만 불린다.
+    // 무한 호출이 돌면 분당 5회에서 먼저 걸리고, 그래도 계속되면 일일 토큰 상한에서
+    // 약 2.5분 만에 멈춘다 (분당 5회 x 20k = 100k/분, 상한 300k).
+    if (url.pathname === '/api/ask' && req.method === 'POST') {
+      const b = await readBody(req);
+      let run = null;
+      req.on('close', () => { if (run && run.cancel) run.cancel(); });
+      const out = await ask(b, { onStart: (p) => { run = p; } });
+      return json(res, out.status || (out.ok ? 200 : 502), out);
+    }
+
     if (url.pathname === '/api/limits') {
       return json(res, 200, await providerMetrics.limits(codexMetricRows(), {
         force: url.searchParams.get('force') === '1',
