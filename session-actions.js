@@ -25,7 +25,9 @@ function commandFor(provider, action) {
 function submitPaste(write, id, text, delayMs) {
   if (!write(id, pasted(text))) return false;
   const wait = delayMs == null ? 250 : delayMs;
-  setTimeout(() => { try { write(id, ENTER); } catch {} }, wait);
+  // 대기 중인 Enter 하나가 프로세스를 붙들지 않게 한다(bridge.js 의 간격 타이머와 같다).
+  const t = setTimeout(() => { try { write(id, ENTER); } catch {} }, wait);
+  if (t.unref) t.unref();
   return true;
 }
 
