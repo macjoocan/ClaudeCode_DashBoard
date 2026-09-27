@@ -23,8 +23,8 @@
 | | 방식 | 문제 |
 |---|---|---|
 | A | CLI 가 살아서 에이전트 입출력을 중계 | **TUI 가 두 겹이 된다** |
-| B | CLI 가 `exec` 로 자리를 넘김 | 돌아올 방법이 없다 |
-| **C** | B + 되돌리기는 **대시보드가** 한다 | — |
+| B | CLI 가 에이전트를 띄우고 물러남 | **훅의 pid 연결이 끊긴다** (아래) |
+| **C** | CLI 는 부탁만 하고, 띄우는 것도 되돌리는 것도 **서버가** 한다 | — |
 
 A 를 버린 이유가 제일 중요하다. 우리는 이미 그 대가를 치렀다: Codex 패인을 대체화면에
 밀어넣었다가 **마우스 휠이 죽었고**(xterm 이 대체화면에서 휠을 화살표 키로 바꿔 앱에
@@ -35,16 +35,18 @@ C 는 중계가 0 이다. 에이전트가 PTY 를 온전히 제 것으로 쓴다
 
 ```
 패인 열림  →  런처 CLI
-                │  고르면: 대시보드에 알린 뒤 exec
+                │  고르면: POST /api/term/restart 를 부르고 사라진다
                 ▼
-           claude / codex        ← 중계 없음. TUI 가 제 PTY 를 그대로 쓴다
-                │  머리글 [런처] → POST /api/term/restart
+           claude / codex        ← 서버가 node-pty 로 직접 띄운다.
+                │                  중계 없음, pid 도 올바르다
+                │  머리글 [런처] → 같은 엔드포인트 (launcher: true)
                 ▼
            런처 CLI 다시
 ```
 
-되돌리기를 CLI 가 아니라 대시보드가 맡는 것이 C 의 요점이다. `exec` 한 프로세스는
-스스로 돌아올 수 없지만, **패인의 주인은 서버**이므로 서버는 언제든 갈아끼울 수 있다.
+띄우는 것도 되돌리는 것도 서버가 맡는 것이 C 의 요점이다. **패인의 주인은 서버**이므로
+서버는 언제든 갈아끼울 수 있고, 그렇게 띄운 프로세스의 pid 가 곧 PTY 의 pid 다 -
+훅이 그 pid 로 상태 파일을 찾으므로 이것이 어긋나면 안 된다.
 
 ## 이미 있는 것에 얹는다
 
@@ -78,40 +80,59 @@ idle/busy/waiting 을 따로 판정한다. **겹치는 기능을 다시 만들 �
 것**. claude-squad 는 독립 병렬 실행이 목적이라 아예 없고, ccmanager 에도 없다. 우리
 `bridge.js`(도착 확인까지 붙은)가 그것이고, CLI 의 `전달` 화면이 그 위에 얹힌다.
 
-## 새로 필요한 것 — `POST /api/term/provider`
+## CLI 는 에이전트를 띄우지 않는다
 
-이것 하나가 C 의 하중을 받는다.
+**2026-09-27 에 고쳤다.** 처음에는 CLI 가 `exec` 로 에이전트가 되고, 그 전에
+`POST /api/term/provider` 로 대시보드에 알리는 그림이었다. **훅이 깨진다.**
 
-터미널 레코드의 `provider` 는 `create` 할 때 한 번 정해지고 **안 바뀐다**:
-
-```js
-provider: isCodex ? 'codex' : 'claude',          // terminals.js, 생성 시 고정
-```
-
-그런데 그 값이 무엇을 읽을지를 결정한다:
+대시보드는 세션 상태를 pid 파일 이름으로 찾는다:
 
 ```js
-: (t.provider === 'codex' ? codexLiveInfo(t) : liveInfo(t.pid))   // 상태를 어디서 읽나
-scrollback: info.provider === 'codex' ? 1000 : 8000               // 스크롤백
-function repaintsInPlace(t) { return t && t.provider === 'codex'; } // 묶음 주기
+function liveInfo(pid) {
+  const f = path.join(LIVE_DIR, pid + '.json');   // ~/.claude/sessions/<pid>.json
 ```
 
-패인을 `claude` 로 열어놓고 CLI 에서 `codex` 를 고르면 대시보드는 계속 Claude 인 줄
-안다 — 상태 판정이 엉뚱한 곳을 읽고, 스크롤백은 8000 으로 남고, 덧그림 판정도 틀린다.
-
-`sessionId` 는 문제가 아니다. 이미 훅이 남긴 live 상태에서 계속 갱신된다
-(`terminals.js`: `if (live && live.sessionId) t.sessionId = live.sessionId;`).
-**`provider` 만 고정이다.**
+`t.pid` 는 node-pty 가 띄운 프로세스의 pid 다. Node 에는 진짜 `exec` 가 없어서 CLI 가
+에이전트를 띄우면 자식이 되고, 훅은 그 자식의 pid 로 파일을 쓴다.
 
 ```
-POST /api/term/provider   { id, provider, sessionId? }
-  → t.provider 를 바꾸고
-  → 붙어 있는 화면에 스크롤백·덧그림 설정을 다시 내린다
+지금            node-pty -> claude.exe(16572)   훅: sessions/16572.json   t.pid=16572  맞음
+CLI 가 띄우면   node-pty -> node(3000)          t.pid=3000
+                             -> claude.exe(4200) 훅: sessions/4200.json   영영 못 찾음
 ```
 
-**CLI 는 이 호출이 성공한 뒤에만 `exec` 한다.** 실패하면 `exec` 하지 않고 이유를
-띄운다 — 상태가 어긋난 채 넘어가면 사용자는 "왜 스크롤이 이상하지" 를 겪고 원인을
-찾을 수 없다. 넘어가지 못하는 편이 낫다.
+상태 표시(작업 중/대기), 세션 ID 연결, 카드와 터미널 연결이 전부 죽는다.
+
+**이 레포는 같은 실패를 이미 겪었다.** `terminals.js` 의 Codex pid 역인덱스가
+무용지물인 이유가 정확히 이것이다 - npm 셤이 실제 바이너리를 자식으로 spawn 해서,
+훅이 기록하는 pid 가 PTY pid 보다 두세 단계 아래다.
+
+그래서 **CLI 는 부탁만 한다.**
+
+```
+CLI -> POST /api/term/restart { id, provider, sessionId }
+         서버가 node-pty 로 직접 띄운다          <- pid 가 올바르다
+       CLI 프로세스는 옛 PTY 와 함께 사라진다
+```
+
+`restart()` 가 이미 거의 그대로 한다 - PTY 를 죽이고 새로 띄우고, 화면에 `reset` 과
+`m` 을 보낸다. 지금은 `t.provider` 와 `t.sessionId` 를 그대로 쓰는 것만 다르므로,
+무엇으로 갈아끼울지를 받게 넓힌다. **새 엔드포인트는 필요 없다.**
+
+성공하면 서버가 CLI 의 PTY 를 죽이므로 **응답이 오지 않는다.** 끊긴 연결을 실패로
+읽으면 성공한 전환이 실패로 보인다 - CLI 는 끊김을 성공으로 읽어야 한다. 바이너리가
+없는 경우는 PTY 를 죽이기 **전에** 실패하므로 정상적으로 사유가 돌아온다.
+
+### 스킬과 MCP 는 영향이 없다
+
+에이전트가 제 설정에서 제가 띄운다 - 누구의 자식인지는 상관이 없다. 걸리는 것은
+훅 하나뿐이고, 그것이 pid 로 맞추기 때문이다.
+
+| | 영향 |
+|---|---|
+| 스킬 | 없음 - 에이전트가 제 디렉터리에서 읽는다 |
+| MCP | 없음 - 에이전트가 제 config 로 서버를 띄운다 |
+| **훅** | **pid 로 맞춘다** - 위 설계가 이것 때문에 정해졌다 |
 
 ## CLI 가 하는 것
 
@@ -120,7 +141,7 @@ POST /api/term/provider   { id, provider, sessionId? }
 | 화면 | 하는 일 | 쓰는 것 |
 |---|---|---|
 | 목록 | 이 폴더의 세션을 provider 구분 없이 한 줄씩 (● = 실행 중) | `GET /api/graph` |
-| 고르기 | 위/아래로 고르고 Enter → 이어하기 | `POST /api/term/provider` → `exec` |
+| 고르기 | 위/아래로 고르고 Enter → 이어하기 | `POST /api/term/restart` 뒤 사라진다 |
 | 새로 | `n` → Claude/Codex 골라 새 세션 | 〃 |
 | 한도 | 맨 위에 주간 % 두 줄 | `GET /api/limits` |
 | 전달 | `s` → 반대편 세션에 말 보내기 | `POST /api/bridge/send` |
@@ -149,8 +170,8 @@ POST /api/term/provider   { id, provider, sessionId? }
 | | 어떻게 |
 |---|---|
 | 서버가 안 떠 있다 | `bridge-send.js` 와 같은 문구로 거절하고 끝낸다 |
-| `provider` 알림 실패 | **`exec` 하지 않는다.** 사유를 띄우고 목록으로 돌아간다 |
-| `exec` 실패 (바이너리 없음) | 사유를 띄우고 목록으로 돌아간다 — 패인이 빈 채로 죽지 않게 |
+| 갈아끼우기 성공 | **응답이 오지 않는다** - 서버가 이 PTY 를 죽인다. 끊김을 성공으로 읽는다 |
+| 서버가 거절 (없는 id·바이너리 없음) | 사유를 띄우고 목록으로 돌아간다. 바이너리 확인은 PTY 를 죽이기 **전에** 하므로 패인이 빈 채로 남지 않는다 |
 | `/api/graph` 가 느리다 | 목록 없이도 `n`(새로)은 되게 둔다 |
 
 ## 시험
@@ -159,8 +180,9 @@ CLI 는 화면을 그리는 물건이라 순수한 부분과 붙는 부분을 �
 
 - **순수** — 세션 목록을 줄 문자열로 만드는 함수, 키 입력 → 다음 상태 전이.
   가짜 데이터로 시험한다. 터미널도 서버도 없이 돈다
-- **엔드포인트** — `/api/term/provider` 가 `provider` 를 실제로 바꾸고, 붙어 있는
-  화면에 설정을 다시 내리는지. 기존 `test/terminals.test.js` 결을 따른다
+- **갈아끼우기 판단** — 무엇을 띄울지 정하는 부분(`relaunchPlan`)을 `restart` 에서
+  떼어내 순수 함수로 시험한다. `restart` 자체는 PTY 를 실제로 띄워 그대로는 시험할
+  수 없다. `kill-result.js` · `launch-args.js` 가 같은 자리에 있는 선례다
 - **왕복** — **7788 은 건드리지 않는다.** 다른 포트로 서버를 띄워 확인한다
   (`CC_LAUNCHER_PORT=7899 node server.js`). 지금 7788 에는 사용자의 실제 작업 세션이
   붙어 있고, 서버를 내리면 **진행 중인 턴이 날아간다**
