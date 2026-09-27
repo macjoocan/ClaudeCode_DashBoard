@@ -93,6 +93,27 @@ test('live output does not force a reader to the bottom', () => {
   assert.equal(buffer.viewportY,20);   // 읽던 자리를 건드리지 않는다
 });
 
+test('wheel navigation during an asynchronous live write stays at the chosen position', () => {
+  const {v,buffer,parsed,frames,ctx} = fixture();
+  buffer.viewportY = buffer.baseY;      // 출력이 시작될 때는 맨 아래
+  ctx.writeOutput(v,{d:'live'},v.ws);
+  frames.shift()();                    // write 콜백은 아직 대기 중
+  ctx.markNavigation(v);              // 그 사이 사용자가 휠을 굴림
+  buffer.viewportY = 120;
+  parsed.shift()();                    // 늦게 도착한 Codex 출력 콜백
+  assert.equal(buffer.viewportY,120);
+});
+
+test('live output still follows the bottom without user navigation', () => {
+  const {v,buffer,parsed,frames,ctx} = fixture();
+  buffer.viewportY = buffer.baseY;
+  ctx.writeOutput(v,{d:'live'},v.ws);
+  frames.shift()();
+  buffer.baseY = 210;
+  parsed.shift()();
+  assert.equal(buffer.viewportY,210);
+});
+
 // Codex TUI 는 한 프레임을 작은 덩어리 여러 개로 흘려보낸다. 덩어리마다 write() 하면
 // 반쯤 그려진 화면이 그대로 렌더돼 입력 줄이 번쩍인다.
 test('live output is coalesced into one write per frame', () => {

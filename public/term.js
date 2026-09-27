@@ -477,7 +477,7 @@
     var v = { el: el, head: head, body: body, term: term, fit: fit, ws: null, info: info, alive: info.alive };
     // Explicit navigation wins over the pending initial-replay scroll.
     ['wheel', 'pointerdown', 'keydown'].forEach(function (name) {
-      body.addEventListener(name, function () { v.replayScroll = null; }, { passive: true });
+      body.addEventListener(name, function () { markNavigation(v); }, { passive: true });
     });
     views.set(info.id, v);
     if (order.indexOf(info.id) < 0) order.push(info.id);
@@ -942,6 +942,11 @@
   // 한 프레임치를 모아 한 번에 쓰면 완성된 화면만 그려진다.
   var OUT_MAX = 256 * 1024;   // 이만큼 쌓이면 프레임을 기다리지 않고 넘긴다
 
+  function markNavigation(v) {
+    v.replayScroll = null;
+    v.scrollEpoch = (v.scrollEpoch || 0) + 1;
+  }
+
   function flushLive(v) {
     if (v.outRaf) { cancelAnimationFrame(v.outRaf); v.outRaf = 0; }
     var chunk = (v.outQ || []).join('');
@@ -951,12 +956,15 @@
     // 쓰기 **전에** 하단에 있었는지 본다. 쓰고 나면 baseY 가 이미 움직여서 늦는다.
     var b = v.term.buffer.active;
     var wasAtBottom = b.viewportY >= b.baseY;
+    var scrollEpoch = v.scrollEpoch || 0;
     try {
       v.term.write(chunk, function () {
         // 출력이 들어오면 화면을 하단에 붙여 둔다. 이게 없으면 새 내용이 아래에
         // 쌓이는 동안 보이는 곳은 그대로라, 화면이 계속 위로 흘러가는 것처럼 보인다.
         // 위로 올려 옛 내용을 보고 있던 사람은 끌어내리지 않는다.
-        if (wasAtBottom) { try { v.term.scrollToBottom(); } catch (e) {} }
+        if (wasAtBottom && (v.scrollEpoch || 0) === scrollEpoch) {
+          try { v.term.scrollToBottom(); } catch (e) {}
+        }
       });
     } catch (e) {}
   }
