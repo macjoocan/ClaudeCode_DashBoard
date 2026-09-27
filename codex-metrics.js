@@ -91,7 +91,11 @@ function entriesFromFile(file, cutoff) {
     entries = parseUsageEntries(r.text, r.start > 0);
     const oldest = entries.reduce((v, e) => Math.min(v, e.at), Infinity);
     if (!(oldest > cutoff && r.start > 0 && want < TAIL_MAX)) break;
-    want = Math.min(want * 4, TAIL_MAX, stat.size);
+    // rollout 이 첫 stat 이후 자랄 수 있다. 실제 읽은 크기를 기준으로 넓히고,
+    // 더 넓힐 수 없다면 같은 구간을 무한히 다시 읽지 않는다.
+    const nextWant = Math.min(want * 4, TAIL_MAX, r.size);
+    if (nextWant <= want) break;
+    want = nextWant;
   }
 
   if (entryCache.size > CACHE_MAX) entryCache.clear();

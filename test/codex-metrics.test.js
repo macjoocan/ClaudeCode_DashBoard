@@ -5,6 +5,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const metrics = require('../codex-metrics');
 
 // limits() 는 리셋 시각이 이미 지난 게이지를 '옛 수치' 로 보고 버린다.
@@ -55,6 +56,33 @@ test('usage 는 오늘과 최근 5시간을 나눠 집계한다', () => {
   assert.equal(out.win5h.total, 220);
   assert.equal(out.win5h.calls, 1);
   assert.equal(out.sessions[0].sessionId, 's1');
+});
+
+test('usage 는 읽는 중 rollout 이 커져도 반복을 끝낸다', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-codex-growing-'));
+  const file = path.join(dir, 'rollout.jsonl');
+  const at = new Date().toISOString();
+  fs.writeFileSync(file, 'x'.repeat(2 * 1024 * 1024) + '\n' +
+    line(at, { input_tokens: 10, output_tokens: 2 }, { total_tokens: 12 }) + '\n');
+  const script = `
+    const fs = require('node:fs');
+    const metrics = require(${JSON.stringify(path.resolve(__dirname, '../codex-metrics'))});
+    const file = process.argv[1];
+    const original = fs.statSync;
+    let reads = 0;
+    fs.statSync = function (target, ...args) {
+      const stat = original.call(this, target, ...args);
+      if (target === file && ++reads === 2) fs.appendFileSync(file, 'more\\n');
+      return stat;
+    };
+    const out = metrics.usage([{ id: 'growing', cwd: process.cwd(), rolloutPath: file }]);
+    console.log(JSON.stringify({ calls: out.today.calls, reads }));
+  `;
+  const child = spawnSync(process.execPath, ['-e', script, file],
+    { encoding: 'utf8', timeout: 2000 });
+  assert.equal(child.error?.code, undefined, `usage hung while reading ${file}: ${child.error?.message}`);
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout.trim()), { calls: 1, reads: 2 });
 });
 
 test('parseRateLimits 는 Codex 시간 창을 공통 게이지 형태로 바꾼다', () => {
