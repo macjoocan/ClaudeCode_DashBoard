@@ -474,7 +474,8 @@
     try { term.loadAddon(new window.WebLinksAddon.WebLinksAddon()); } catch (e) {}
     term.open(body);
 
-    var v = { el: el, head: head, body: body, term: term, fit: fit, ws: null, info: info, alive: info.alive };
+    var v = { el: el, head: head, body: body, term: term,
+      fit: fit, ws: null, info: info, alive: info.alive };
     // Explicit navigation wins over the pending initial-replay scroll.
     ['wheel', 'pointerdown', 'keydown'].forEach(function (name) {
       body.addEventListener(name, function () { markNavigation(v); }, { passive: true });
@@ -507,6 +508,14 @@
   var MD_PATH_RE = /(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|[\\/])?(?:[^\s"'`<>|*?]+[\\/])*[^\s"'`<>|*?]+\.(?:md|markdown)(?![A-Za-z0-9_])/g;
   var QUOTED_MD_PATH_RE = /["'`]([^"'`\r\n]+\.(?:md|markdown))["'`]/g;
 
+  function hardMdContinuation(previous, next) {
+    if (!previous || !next || next.isWrapped) return false;
+    var tail = previous.translateToString(true).match(/[^\s"'`<>|*?]+$/)?.[0] || '';
+    var head = next.translateToString(true).match(/^\s*([^\s"'`<>|*?]+)/)?.[1] || '';
+    return !!head && !/\.(?:md|markdown)$/i.test(tail) &&
+      (/[\\/]/.test(tail) || /[-_.]$/.test(tail)) && /^[\p{L}\p{N}._-]/u.test(head);
+  }
+
   function registerMdLinks(v) {
     if (!v.term.registerLinkProvider) return;
     v.term.registerLinkProvider({
@@ -514,16 +523,22 @@
         var buffer = v.term.buffer.active;
         var line = buffer.getLine(y - 1);
         if (!line) { cb(undefined); return; }
-        // xterm 은 긴 경로를 여러 화면 줄로 접는다. 이어진 줄을 한 논리 줄로
-        // 합쳐야 앞부분을 잃지 않고 실제 파일 경로를 열 수 있다.
+        // xterm 의 자동 줄바꿈뿐 아니라 Codex TUI 가 직접 나눠 그린 줄도
+        // 경로의 연속이면 한 논리 줄로 합친다.
         var first = y - 1, last = y - 1;
-        while (first > 0 && first > y - 16 && buffer.getLine(first).isWrapped) first--;
-        while (last < y + 14 && buffer.getLine(last + 1)?.isWrapped) last++;
+        while (first > 0 && first > y - 16 &&
+          (buffer.getLine(first).isWrapped || hardMdContinuation(buffer.getLine(first - 1), buffer.getLine(first)))) first--;
+        while (last < y + 14 &&
+          (buffer.getLine(last + 1)?.isWrapped || hardMdContinuation(buffer.getLine(last), buffer.getLine(last + 1)))) last++;
         var parts = [], text = '';
         for (var row = first; row <= last; row++) {
           var partLine = buffer.getLine(row);
           var partText = partLine.translateToString(true);
-          parts.push({ line: partLine, y: row + 1, start: text.length, end: text.length + partText.length });
+          var indent = row > first && hardMdContinuation(buffer.getLine(row - 1), partLine)
+            ? (partText.match(/^\s*/) || [''])[0].length : 0;
+          partText = partText.slice(indent);
+          parts.push({ line: partLine, y: row + 1, indent: indent,
+            start: text.length, end: text.length + partText.length });
           text += partText;
         }
         var links = [], quoted = [], m;
@@ -558,7 +573,7 @@
     function point(index, end) {
       for (var part of parts) {
         if (index < part.start || index >= part.end) continue;
-        var offset = index - part.start;
+        var offset = index - part.start + part.indent;
         var line = part.line;
         if (line.getCell) {
           var chars = 0;
@@ -615,7 +630,7 @@
       +   (!i.sessionId ? ' disabled' : '')
       +   ' title="' + (i.sessionId
             ? '세션 ID 복사 · ' + escText(i.sessionId)
-            : '세션 ID 는 첫 대화가 시작돼야 생깁니다') + '">ID</button>'
+             : '세션 ID 는 첫 대화가 시작돼야 생깁니다') + '">ID</button>'
       + '<button class="pbtn ctx" data-termctx="compact" data-termid="' + id + '"'
       +   (!i.alive ? ' disabled' : '') + ' title="현재 대화를 요약 압축해 컨텍스트 공간 확보">압축</button>'
       + '<button class="pbtn ctx warn" data-termctx="clear" data-termid="' + id + '"'
@@ -1033,6 +1048,56 @@
     if (v.body) v.body.classList.remove('replaying');
   }
 
+  // Codex 는 같은 화면을 계속 다시 그려서, 서버의 최근 ANSI 출력만 재생하면
+  // xterm 스크롤백이 비어 있다. 저장된 대화를 같은 xterm 버퍼에 먼저 써 넣고
+  // 화면만 지운 다음 최신 TUI 출력을 그리면 휠로 되짚을 줄이 남는다.
+  function codexScrollback(messages) {
+    return (messages || []).filter(function (m) {
+      return (m.role === 'user' || m.role === 'assistant') && m.text;
+    }).map(function (m) {
+      var label = m.role === 'user' ? '나' : 'Codex';
+      var safe = String(m.text).replace(/[\x00-\x09\x0b-\x1f\x7f]/g, '');
+      return '\r\n  ' + label + '\r\n' + safe.replace(/\r?\n/g, '\r\n') + '\r\n';
+    }).join('');
+  }
+
+  function restoreCodexReplay(v, data, ws) {
+    var token = {};
+    v.codexReplay = token;
+    v.codexQueued = [];
+    v.body.style.visibility = 'hidden';
+    var id = v.info.sessionId;
+    var history = id
+      ? fetch('/api/transcript?provider=codex&id=' + encodeURIComponent(id) + '&limit=500')
+        .then(function (r) { return r.json(); })
+        .then(function (j) { return j.error ? '' : codexScrollback(j.messages); })
+        .catch(function () { return ''; })
+      : Promise.resolve('');
+    Promise.race([history, new Promise(function (resolve) {
+      setTimeout(function () { resolve(''); }, 3000);
+    })]).then(function (prefix) {
+      if (v.ws !== ws || v.codexReplay !== token) return;
+      // CSI 2J 는 보이는 화면만 지운다. 이전에 쓴 줄은 스크롤백에 남는다.
+      var output = (prefix ? prefix + '\x1b[2J\x1b[H' : '') + data;
+      v.term.write(output, function () {
+        if (v.ws !== ws || v.codexReplay !== token) return;
+        var queued = v.codexQueued.join('');
+        v.codexQueued = [];
+        v.codexReplay = null;
+        function finish() {
+          requestAnimationFrame(function () {
+            if (v.ws !== ws) return;
+            fitView(v);
+            v.term.scrollToBottom();
+            v.body.style.visibility = '';
+          });
+        }
+        if (queued) v.term.write(queued, finish);
+        else finish();
+      });
+    });
+  }
+
   function writeOutput(v, m, ws) {
     if (!m.replay) { writeLive(v, m.d); return; }
     var token = {};
@@ -1056,6 +1121,9 @@
 
   function connect(v) {
     v.replayScroll = null;
+    v.codexReplay = null;
+    v.codexQueued = [];
+    v.body.style.visibility = '';
     dropPending(v); endReplay(v);   // 옛 소켓의 대기 출력이 새 복원 위에 쏟아지지 않게
     var ws = new WebSocket('ws://' + location.host + '/term?id=' + encodeURIComponent(v.info.id));
     v.ws = ws;
@@ -1064,7 +1132,8 @@
       var m;
       try { m = JSON.parse(ev.data); } catch (e) { return; }
       if (m.t === 'o') {
-        writeOutput(v, m, ws);
+        if (v.codexReplay) v.codexQueued.push(m.d);
+        else writeOutput(v, m, ws);
       } else if (m.t === 'replay') {
         // 이어하기 기록 재생. 서버가 조용해질 때까지 모았다가 한 덩어리로 준다.
         //
@@ -1072,14 +1141,11 @@
         // 아래로 쓸려 내려가는 것이 그대로 보인다. 다 쓸 때까지 패인을 가려 둔다.
         // 기록은 스크롤백에 그대로 남으므로 마우스 휠로 되짚을 수 있다.
         dropPending(v);
-        v.body.style.visibility = 'hidden';
-        try {
-          v.term.write(m.d, function () {
-            v.body.style.visibility = '';
-            try { v.term.scrollToBottom(); } catch (e) {}
-          });
-        } catch (e) { v.body.style.visibility = ''; }
+        restoreCodexReplay(v, m.d, ws);
       } else if (m.t === 'reset') {
+        v.codexReplay = null;
+        v.codexQueued = [];
+        v.body.style.visibility = '';
         v.replayScroll = null;
         dropPending(v); endReplay(v);      // 옛 PTY 의 대기 출력을 새 화면에 쏟지 않는다
         v.term.reset();                    // 서버가 PTY 를 갈아끼웠다

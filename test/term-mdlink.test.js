@@ -95,6 +95,34 @@ test('접힌 터미널 두 줄의 문서 경로를 어느 줄에서 눌러도 �
   }
 });
 
+test('Codex가 직접 두 화면 줄에 나눠 그린 경로도 전체 파일로 연다', () => {
+  const first = '📄 docs/superpowers/specs/2026-09-27-';
+  const second = '  orderflow-paper-forward-validation-design.md';
+  const lines = [first, second].map(text => ({
+    isWrapped: false,
+    translateToString: () => text,
+  }));
+  let provider, opened;
+  const v = { info: { cwd: 'D:\\00.project\\Claude_Code' }, term: {
+    buffer: { active: { getLine: i => lines[i] } },
+    registerLinkProvider: p => { provider = p; },
+  } };
+  const start = source.indexOf('  var MD_PATH_RE =');
+  const end = source.indexOf('  // 패인 머리글:', start);
+  const ctx = { CC: { openMd: (file, cwd) => { opened = { file, cwd }; } } };
+  vm.createContext(ctx);
+  vm.runInContext(source.slice(start, end), ctx);
+  ctx.registerMdLinks(v);
+  let links;
+  provider.provideLinks(2, value => { links = value; });
+  assert.equal(links?.length, 1);
+  assert.equal(links[0].text, first.slice(3) + second.trimStart());
+  assert.equal(links[0].range.start.y, 1);
+  assert.equal(links[0].range.end.y, 2);
+  links[0].activate();
+  assert.deepEqual(opened, { file: first.slice(3) + second.trimStart(), cwd: 'D:\\00.project\\Claude_Code' });
+});
+
 test('다른 줄에만 있는 링크는 현재 줄의 링크로 돌려주지 않는다', () => {
   const lines = ['docs/a.md and ', 'docs/b.md'].map((text, i) => ({
     isWrapped: i > 0,

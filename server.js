@@ -37,6 +37,7 @@ const { taskkillOutcome } = require('./kill-result');
 const { pendingPrompt } = require('./tui-state');
 const scribe = require('./scribe');
 const documents = require('./documents');
+const { resolveMarkdownPath } = require('./md-resolve');
 const { createGuard } = require('./ask-guard');
 const { createRunner } = require('./ask-run');
 const { createAsk } = require('./ask');    // 마크다운 편집기 (SCRIBE 빌드물 + 파일 브리지)
@@ -1085,17 +1086,8 @@ const server = http.createServer(async (req, res) => {
     // 여는 것 자체는 SCRIBE 의 보관 폴더를 그 폴더로 바꿔서 한다.
     if (url.pathname === '/api/md/resolve' && req.method === 'POST') {
       const b = await readBody(req);
-      const raw = String(b.path || '').trim().replace(/^["'`]|["'`]$/g, '');
-      if (!raw) throw new Error('경로가 비어 있습니다');
-      if (!/\.(md|markdown)$/i.test(raw)) throw new Error('마크다운 파일이 아닙니다');
-      const base = String(b.cwd || '');
-      const full = path.resolve(path.isAbsolute(raw) ? raw : path.join(base, raw));
-      let st;
-      try { st = fs.statSync(full); } catch { throw new Error('파일을 찾지 못했습니다: ' + full); }
-      if (!st.isFile()) throw new Error('파일이 아닙니다: ' + full);
-      return json(res, 200, {
-        ok: true, full, dir: path.dirname(full), file: path.basename(full),
-      });
+      const roots = scan().map(project => project.cwd);
+      return json(res, 200, { ok: true, ...resolveMarkdownPath(b.path, b.cwd, roots) });
     }
 
     if (url.pathname === '/api/md/image' && req.method === 'POST') {
