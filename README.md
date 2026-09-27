@@ -228,6 +228,10 @@ Windows Terminal 이 없는 PC 는 원래부터 `Start-Process powershell` 로 �
 - **진짜 터미널이다.** node-pty(ConPTY) + xterm.js 로 실제 PTY 를 붙였다. Claude Code TUI 가
   그대로 뜨고, 권한 승인 프롬프트·폴더 신뢰 확인·슬래시 명령 자동완성·`shift+tab` 모드 전환·
   Ctrl+C 가 전부 정상 동작한다.
+- **대시보드에서 시작한 Codex CLI는 승인 요청을 자동 심사한다.** 새 세션·이어하기·포크에
+  `approvals_reviewer=auto_review`를 실행 인자로 전달한다. Codex의 샌드박스와 승인 정책은
+  그대로 적용되며, 심사에서 거부한 요청은 실행되지 않는다. PC 전체의 `~/.codex/config.toml`은
+  바꾸지 않으므로 대시보드 밖에서 시작한 세션에는 적용되지 않는다.
 - **PTY 출력을 한 프레임(16ms)씩 묶어 보낸다.** 실측: Codex 가 그리는 중에는 **초당 1100개**
   덩어리가 나온다 - 동기화 구간(`ESC[?2026h … ESC[?2026l`)과 커서 모양(`ESC[0 q`)을 프레임마다
   쏘느라 길이 1짜리 덩어리도 수백 개다. 그걸 하나씩 WS 로 보내면 브라우저가 JSON 파싱과

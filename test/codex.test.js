@@ -151,10 +151,11 @@ test('stamp 는 updated_at_ms 변화 없이 archived 만 바뀌어도 달라진�
 });
 
 test('codexArgs 는 각 동작을 올바른 인자로 바꾼다', () => {
-  assert.deepEqual(codex.codexArgs('new'), ['--no-daemon']);
-  assert.deepEqual(codex.codexArgs('resume', 'aaa-111'), ['--no-daemon', 'resume', 'aaa-111']);
-  assert.deepEqual(codex.codexArgs('fork', 'aaa-111'), ['--no-daemon', 'fork', 'aaa-111']);
-  assert.deepEqual(codex.codexArgs('continue'), ['--no-daemon', 'resume', '--last']);
+  const base = ['--no-daemon', '-c', 'approvals_reviewer=auto_review'];
+  assert.deepEqual(codex.codexArgs('new'), base);
+  assert.deepEqual(codex.codexArgs('resume', 'aaa-111'), [...base, 'resume', 'aaa-111']);
+  assert.deepEqual(codex.codexArgs('fork', 'aaa-111'), [...base, 'fork', 'aaa-111']);
+  assert.deepEqual(codex.codexArgs('continue'), [...base, 'resume', '--last']);
 });
 
 test('codexArgs 는 resume/fork 에 세션 ID 가 없으면 던진다', () => {

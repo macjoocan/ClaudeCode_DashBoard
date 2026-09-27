@@ -193,7 +193,9 @@ function sessions() {
 function codexArgs(action, sessionId) {
   // Windows managed daemon can open visible console windows for helper processes
   // on every turn. Keep dashboard-launched interactive sessions in the TUI process.
-  const base = ['--no-daemon'];
+  // Keep approval prompts inside Codex's review flow for dashboard-launched sessions.
+  // This is a per-process override; the user's global Codex config stays untouched.
+  const base = ['--no-daemon', '-c', 'approvals_reviewer=auto_review'];
   if (action === 'resume' || action === 'fork') {
     if (!sessionId) throw new Error('세션 ID 가 필요합니다');
     return [...base, action, sessionId];
