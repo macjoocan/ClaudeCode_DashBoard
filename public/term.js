@@ -495,16 +495,17 @@
     return v;
   }
 
-  // 터미널에 찍힌 .md 경로를 Ctrl+클릭하면 문서 탭에서 그 폴더를 연다.
+  // 터미널에 찍힌 .md 경로를 클릭하면 문서 탭에서 그 문서를 연다.
   //
   // Claude Code 도 Codex 도 문서를 만들면 경로를 찍어준다. 그걸 손으로 복사해
   // 폴더를 고르는 대신 바로 갈 수 있게 한다. 상대경로는 그 터미널의 cwd 기준이라
   // 서버가 풀어준다(/api/md/resolve).
   //
-  // 한계: 공백이 든 경로(C:\Program Files\...)는 어디서 끊길지 알 수 없어 잡지 않는다.
+  // 공백이 든 경로는 따옴표로 감싼 경우에만 한 경로로 판정한다.
   //
   //   [드라이브: 또는 구분자로 시작]?  (폴더 구분자)*  이름.md
   var MD_PATH_RE = /(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|[\\/])?(?:[^\s"'`<>|*?]+[\\/])*[^\s"'`<>|*?]+\.(?:md|markdown)(?![A-Za-z0-9_])/g;
+  var QUOTED_MD_PATH_RE = /["'`]([^"'`\r\n]+\.(?:md|markdown))["'`]/g;
 
   function registerMdLinks(v) {
     if (!v.term.registerLinkProvider) return;
@@ -513,9 +514,16 @@
         var line = v.term.buffer.active.getLine(y - 1);
         if (!line) { cb(undefined); return; }
         var text = line.translateToString(true);
-        var links = [], m;
+        var links = [], quoted = [], m;
+        QUOTED_MD_PATH_RE.lastIndex = 0;
+        while ((m = QUOTED_MD_PATH_RE.exec(text)) !== null) {
+          if (!m[1].includes(' ')) continue;
+          quoted.push({ start: m.index + 1, end: m.index + 1 + m[1].length });
+          links.push(mdLink(v, m[1], m.index + 1, y));
+        }
         MD_PATH_RE.lastIndex = 0;
         while ((m = MD_PATH_RE.exec(text)) !== null) {
+          if (quoted.some(q => m.index >= q.start && m.index < q.end)) continue;
           // 경로를 감싼 괄호·따옴표와 문장 끝 기호는 경로가 아니다.
           // 앞을 깎은 만큼 밑줄 위치도 밀어야 엉뚱한 칸에 그어지지 않는다.
           var raw = m[0];
@@ -535,8 +543,6 @@
       text: raw,
       range: { start: { x: index + 1, y: y }, end: { x: index + raw.length, y: y } },
       activate: function (ev) {
-        // Ctrl(맥은 Cmd) 없이 누른 건 그냥 드래그 선택이다. 건드리지 않는다.
-        if (!ev || !(ev.ctrlKey || ev.metaKey)) return;
         if (CC.openMd) CC.openMd(raw, v.info.cwd);
         else note('문서 탭을 쓸 수 없습니다', true);
       }

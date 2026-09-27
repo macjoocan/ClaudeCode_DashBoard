@@ -36,6 +36,7 @@ const { wtArgs } = require('./launch-args');
 const { taskkillOutcome } = require('./kill-result');
 const { pendingPrompt } = require('./tui-state');
 const scribe = require('./scribe');
+const documents = require('./documents');
 const { createGuard } = require('./ask-guard');
 const { createRunner } = require('./ask-run');
 const { createAsk } = require('./ask');    // 마크다운 편집기 (SCRIBE 빌드물 + 파일 브리지)
@@ -44,7 +45,7 @@ const HOOK_URL = `http://${'127.0.0.1'}:${Number(process.env.CC_LAUNCHER_PORT ||
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CC_LAUNCHER_PORT || 7788);
-const API_VERSION = 4; // launchers use this to distinguish a stale in-memory server
+const API_VERSION = 7; // launchers use this to distinguish a stale in-memory server
 const CLAUDE_HOME = path.join(os.homedir(), '.claude');
 const PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects');
 const LIVE_DIR = path.join(CLAUDE_HOME, 'sessions'); // <pid>.json = 살아있는 세션 상태
@@ -848,7 +849,7 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=u
                '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml',
                '.json': 'application/json; charset=utf-8', '.woff2': 'font/woff2',
                // SCRIBE 빌드물이 KaTeX 폰트를 woff/ttf 로도 싣는다
-               '.woff': 'font/woff', '.ttf': 'font/ttf', '.map': 'application/json; charset=utf-8',
+               '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.map': 'application/json; charset=utf-8',
                // 보관 폴더의 이미지를 미리보기에 내려줄 때
                '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
                '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif',
@@ -1039,6 +1040,27 @@ const server = http.createServer(async (req, res) => {
       if (!raw.length) throw new Error('빈 파일입니다');
       const saved = savePaste(raw, url.searchParams.get('name'));
       return json(res, 200, { ok: true, path: saved.path, bytes: saved.bytes });
+    }
+
+    // ------- 로컬 마크다운 문서 편집기 -------
+    if (url.pathname === '/api/docs' && req.method === 'POST') {
+      const raw = await readRawBody(req, 16 * 1024 * 1024);
+      let b;
+      try { b = raw.length ? JSON.parse(raw.toString('utf8')) : {}; }
+      catch { throw new Error('요청 본문을 읽지 못했습니다'); }
+      return json(res, 200, { ok: true, result: documents.run(String(b.op || ''), b) });
+    }
+
+    if (url.pathname === '/api/docs/image' && req.method === 'POST') {
+      const raw = await readRawBody(req, 8 * 1024 * 1024);
+      const result = documents.saveImage(url.searchParams.get('root'), url.searchParams.get('file'), raw);
+      return json(res, 200, { ok: true, result });
+    }
+
+    if (url.pathname === '/api/docs/asset' && req.method === 'GET') {
+      const asset = documents.assetPath(url.searchParams.get('root'), url.searchParams.get('file'));
+      res.writeHead(200, { 'content-type': asset.mime, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+      return fs.createReadStream(asset.full).pipe(res);
     }
 
     // ------- 마크다운 편집기 (SCRIBE) -------

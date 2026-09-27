@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>문서</title><link rel="stylesheet" href="/docs.bundle.css">
+<style>
+  :root{color-scheme:dark;font:14px system-ui,sans-serif;background:#15191e;color:#e6e9ee}
+  *{box-sizing:border-box}body{margin:0}.app{height:100vh;display:grid;grid-template-columns:220px minmax(0,1fr)}
+  .sidebar-collapsed .app{grid-template-columns:0 minmax(0,1fr)}.sidebar-collapsed aside{display:none}
+  aside{border-right:1px solid #333c46;display:flex;flex-direction:column;min-height:0;background:#1b2027}
+  .aside-head,.tools{display:flex;gap:8px;align-items:center;padding:10px;border-bottom:1px solid #333c46}
+  .aside-head strong{flex:1}.side-tabs{display:flex;gap:4px;padding:8px;border-bottom:1px solid #333c46}.side-tabs button{flex:1}
+  .files,.outline{overflow:auto;padding:8px;flex:1;min-height:0}.files button,.outline button{display:block;width:100%;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  button{font:inherit;color:#e6e9ee;background:#29313a;border:1px solid #46515d;border-radius:5px;padding:5px 9px;cursor:pointer}
+  button:hover{background:#36414d}button.active{background:#314b62;border-color:#5f9dcc}.files button,.outline button{background:transparent;border:0;padding:6px 8px}
+  .tree-children{padding-left:13px;border-left:1px solid #34414d;margin-left:8px}.tree-folder>summary{cursor:pointer;padding:6px 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tree-folder>summary:hover{color:#9ecfff}
+  .outline button{line-height:1.35}.outline button:hover{background:#293b4b}.outline .empty{font-size:13px}
+  .files button.active{background:#314b62}.content{display:flex;flex-direction:column;min-width:0;min-height:0}
+  .tools .name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+  .status{padding:6px 12px;color:#aab9c8;min-height:30px;border-bottom:1px solid #333c46}
+  #editor{overflow:auto;flex:1;background:#fdfdfc;color:#222;min-height:0}
+  #editor .milkdown{max-width:1400px;width:100%;min-height:100%;margin:auto;padding:28px clamp(24px,4vw,64px)}
+  .read-mode #editor .milkdown-top-bar,.read-mode #editor .milkdown-block-handle,.read-mode #editor .milkdown-toolbar,.read-mode #editor .milkdown-slash-menu{display:none!important}
+  .read-mode #editor .ProseMirror{caret-color:transparent}
+  #source{display:none;flex:1;resize:none;border:0;outline:0;padding:24px 36px;background:#fdfdfc;color:#222;font:14px/1.6 Consolas,monospace}
+  .source-mode #source{display:block}.source-mode #editor{display:none}
+  .empty{color:#9eabb9;padding:14px}.hidden{display:none!important}
+  @media(max-width:700px){.app{grid-template-columns:170px minmax(0,1fr)}.tools{flex-wrap:wrap}.tools .name{flex-basis:100%}#editor .milkdown{padding:20px}}
+</style></head><body>
+<div class="app"><aside><div class="aside-head"><strong>문서</strong><button id="new" title="새 문서">＋</button><button id="reload" title="목록 새로고침">↻</button></div><div class="side-tabs"><button id="files-tab" class="active" aria-pressed="true">파일</button><button id="outline-tab" aria-pressed="false">목차</button></div><div id="files" class="files"></div><div id="outline" class="outline" hidden></div></aside>
+<main class="content"><div class="tools"><button id="sidebar-toggle" title="문서 목록 접기" aria-label="문서 목록 접기">☰</button><span id="name" class="name">문서를 선택하세요</span><button id="read">읽기</button><button id="visual" class="active">편집</button><button id="raw">마크다운</button><button id="image" title="이미지 파일을 선택해 문서에 넣기">이미지</button><input id="image-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden><button id="save">저장 Ctrl+S</button></div><div id="status" class="status"></div><div id="editor"></div><textarea id="source" spellcheck="false" aria-label="마크다운 원문"></textarea></main></div>
+<script src="/docs.bundle.js"></script></body></html>

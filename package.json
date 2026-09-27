@@ -6,10 +6,16 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "build:docs": "esbuild docs-client.js --bundle --minify --format=iife --loader:.woff2=file --loader:.woff=file --loader:.ttf=file --asset-names=docs-assets/[name]-[hash] --outfile=public/docs.bundle.js"
   },
   "dependencies": {
+    "@milkdown/crepe": "^7.22.2",
+    "@milkdown/kit": "^7.22.2",
     "node-pty": "^1.1.0",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
   }
 }

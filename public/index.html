@@ -773,7 +773,7 @@
   <div id="cfgwrap" hidden></div>
   <div id="mdwrap" hidden>
     <div class="mdbar" id="mdbar"></div>
-    <iframe id="mdframe" title="SCRIBE 마크다운 편집기"></iframe>
+    <iframe id="mdframe" title="마크다운 문서 편집기"></iframe>
   </div>
 </main>
 
@@ -1612,52 +1612,26 @@ function sessionCard(s, emb){
     + '</div></section>';
 }
 
-/* ------------------------------------------------ 문서 탭 (SCRIBE 편집기) */
-//
-// SCRIBE 빌드물을 iframe 으로 띄우고, 파일 접근은 서버의 /api/md 가 받는다.
-// 편집기 쪽 window.scribe 는 public/scribe-bridge.js 가 넣어준다.
-
-let MDSTATE = null;      // { ok, scribeDir, error, vault }
+/* ------------------------------------------------ 문서 탭 */
+let MDSTATE = { ok: true, vault: localStorage.getItem('ccl.docs.root') || '' };
 let mdLoaded = false;
-
-async function mdCall(op, body){
-  const j = await post('/api/md', Object.assign({ op }, body || {}));
-  return j.result;
+let mdReady = false;
+let mdPending = null;
+function mdSend(message){
+  if (!mdReady){ mdPending = message; return; }
+  $('#mdframe').contentWindow.postMessage(message, location.origin);
 }
-
 async function mdEnter(){
-  if (!MDSTATE){
-    try { MDSTATE = await mdCall('status'); }
-    catch (e) { MDSTATE = { ok:false, error: e.message }; }
-  }
   renderMdBar();
-  // 편집기는 한 번만 띄운다. 탭을 오갈 때마다 새로 띄우면 편집 중인 내용이 날아간다.
-  if (MDSTATE.ok && !mdLoaded){
-    $('#mdframe').src = '/scribe/';
+  if (!mdLoaded){
+    $('#mdframe').src = '/docs.html';
     mdLoaded = true;
   }
-  $('#mdframe').hidden = !MDSTATE.ok;
+  $('#mdframe').hidden = false;
 }
 
 function renderMdBar(){
   const bar = $('#mdbar');
-  if (!MDSTATE || !MDSTATE.ok){
-    bar.innerHTML = '<span class="lb">SCRIBE 를 찾지 못했습니다</span>'
-      + '<span class="vault">' + esc((MDSTATE && MDSTATE.error) || '') + '</span>';
-    $('#mdframe').hidden = true;
-    if (!$('#mdnone')){
-      const d = document.createElement('div');
-      d.className = 'mdnone'; d.id = 'mdnone';
-      d.innerHTML = '<div>마크다운 편집기(SCRIBE)를 찾지 못했습니다.</div>'
-        + '<div>SCRIBE 를 <code>&lt;런처 상위&gt;\\Scribe\\editor</code> 에 두거나,<br>'
-        + '환경변수 <code>CC_SCRIBE_DIR</code> 로 위치를 알려주세요.<br>'
-        + '<code>editor\\dist</code> 가 있어야 합니다 (<code>npm run build</code>).</div>';
-      $('#mdwrap').appendChild(d);
-    }
-    return;
-  }
-  const none = $('#mdnone'); if (none) none.remove();
-
   // 세션이 있는 프로젝트를 바로 고를 수 있게 (터미널에서 만든 md 를 여는 게 목적이다)
   const opts = DATA.map(p => '<option value="'+esc(p.cwd)+'"'
       + (MDSTATE.vault && p.cwd.toLowerCase() === String(MDSTATE.vault).toLowerCase() ? ' selected' : '')
@@ -1667,7 +1641,7 @@ function renderMdBar(){
       '<span class="lb">보관 폴더</span>'
     + '<select id="md-proj"><option value="">프로젝트에서 고르기…</option>' + opts + '</select>'
     + '<button class="pick" data-mdpick="1" title="윈도 폴더 창에서 아무 폴더나 고른다">📁 폴더 고르기</button>'
-    + '<button data-mdreload="1" title="편집기를 다시 불러온다">↻</button>'
+    + '<button data-mdreload="1" title="문서 목록을 다시 읽는다">↻</button>'
     + '<span class="vault">' + (MDSTATE.vault
         ? '<b>' + esc(MDSTATE.vault) + '</b>'
         : '폴더를 고르면 그 안의 .md 를 편집합니다') + '</span>';
@@ -1675,28 +1649,24 @@ function renderMdBar(){
 
 // 보관 폴더를 바꾸고 편집기에 알린다
 async function mdSetVault(dir){
-  const r = await mdCall('set-vault', { dir });
-  MDSTATE.vault = r.listing ? r.listing.root : dir;
+  MDSTATE.vault = dir;
+  localStorage.setItem('ccl.docs.root', dir);
   renderMdBar();
-  // 편집기가 이미 떠 있으면 새로 읽게 한다. 브리지의 currentVault 를 다시 타야 한다.
-  if (mdLoaded) $('#mdframe').contentWindow.location.reload();
-  else { $('#mdframe').src = '/scribe/'; mdLoaded = true; }
-  return r.listing;
+  if (mdLoaded) mdSend({ type:'docs:open', root:dir });
+  else await mdEnter();
 }
-
-// 편집기 안에서 '보관 폴더 열기' 를 누르면 여기로 온다.
-// iframe 안에서 네이티브 폴더 창을 띄우면 뒤에 가려 보이지 않을 수 있어 부모가 띄운다.
-window.addEventListener('message', async function(e){
+window.addEventListener('message', function(e){
   if (e.origin !== location.origin || !e.data) return;
-  if (e.data.type !== 'scribe:pick-vault') return;
-  let listing = null;
-  try{
-    const j = await post('/api/pickfolder', { start: MDSTATE && MDSTATE.vault });
-    if (!j.cancelled && j.path) listing = await mdSetVault(j.path);
-  }catch(err){ toast('폴더 열기 실패: ' + err.message, true); }
-  const fr = $('#mdframe');
-  if (fr && fr.contentWindow)
-    fr.contentWindow.postMessage({ type:'scribe:vault-picked', listing }, location.origin);
+  if (e.data.type === 'docs:root-rejected'){
+    MDSTATE.vault = e.data.root;
+    localStorage.setItem('ccl.docs.root', e.data.root);
+    renderMdBar();
+    return;
+  }
+  if (e.data.type !== 'docs:ready') return;
+  mdReady = true;
+  if (mdPending){ $('#mdframe').contentWindow.postMessage(mdPending, location.origin); mdPending = null; }
+  else if (MDSTATE.vault) mdSend({ type:'docs:open', root:MDSTATE.vault });
 });
 
 function render(){
@@ -2185,8 +2155,8 @@ document.addEventListener('click', async function(e){
     return;
   }
   if (t.dataset.mdreload){
-    if (mdLoaded) $('#mdframe').contentWindow.location.reload();
-    toast('편집기를 다시 불러왔습니다');
+    if (mdLoaded) mdSend({ type:'docs:open', root:MDSTATE.vault });
+    toast('문서 목록을 다시 불러왔습니다');
     return;
   }
 
@@ -2542,29 +2512,16 @@ CC.cfgEdit.onChanged = function(){
 };
 CC.toast = toast;   // config-edit.js 가 쓴다
 
-// 터미널에 찍힌 .md 경로를 Ctrl+클릭했을 때 (term.js 가 부른다).
-//
-// SCRIBE 는 "보관 폴더" 하나를 열어 그 안의 문서를 다루는 구조라, 바깥에서
-// "이 파일을 열어라" 라고 시킬 방법이 없다(빌드에 그런 훅이 없다).
-// 그래서 파일이 있는 폴더로 보관 폴더를 바꾸고 문서 탭으로 보낸다.
-// 마지막 클릭 한 번은 사용자 몫이다 - 어느 파일인지는 토스트로 알려준다.
+// 터미널에 찍힌 .md 경로를 누르면 그 파일을 바로 연다.
 CC.openMd = async function(p, cwd){
   try{
     const j = await post('/api/md/resolve', { path: p, cwd });
-    if (!MDSTATE){
-      try { MDSTATE = await mdCall('status'); }
-      catch (e) { MDSTATE = { ok:false, error: e.message }; }
-    }
-    if (!MDSTATE.ok){
-      toast('SCRIBE 를 쓸 수 없습니다: ' + (MDSTATE.error || ''), true);
-      return;
-    }
     setTab('md');
     await mdEnter();
-    const same = MDSTATE.vault && String(MDSTATE.vault).toLowerCase() === j.dir.toLowerCase();
-    if (!same) await mdSetVault(j.dir);
-    toast(same ? j.file + ' · 목록에서 여세요'
-               : '보관 폴더를 ' + j.dir + ' 로 바꿨습니다 · ' + j.file + ' 을 여세요');
+    MDSTATE.vault = j.dir;
+    localStorage.setItem('ccl.docs.root', j.dir);
+    renderMdBar();
+    mdSend({ type:'docs:open', root:j.dir, file:j.file });
   }catch(err){ toast('문서를 열지 못했습니다: ' + err.message, true); }
 };
 

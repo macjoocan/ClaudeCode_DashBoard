@@ -191,12 +191,15 @@ function sessions() {
 
 // 실행 시 codex CLI 에 넘길 인자를 만든다. Claude 쪽 claudeArgs 와 대응.
 function codexArgs(action, sessionId) {
+  // Windows managed daemon can open visible console windows for helper processes
+  // on every turn. Keep dashboard-launched interactive sessions in the TUI process.
+  const base = ['--no-daemon'];
   if (action === 'resume' || action === 'fork') {
     if (!sessionId) throw new Error('세션 ID 가 필요합니다');
-    return [action, sessionId];
+    return [...base, action, sessionId];
   }
-  if (action === 'continue') return ['resume', '--last'];
-  return [];   // 'new'
+  if (action === 'continue') return [...base, 'resume', '--last'];
+  return base;   // 'new'
 }
 
 // PATH 에서 codex 실행파일을 찾는다. 없으면 null.
