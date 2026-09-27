@@ -511,15 +511,27 @@
     if (!v.term.registerLinkProvider) return;
     v.term.registerLinkProvider({
       provideLinks: function (y, cb) {
-        var line = v.term.buffer.active.getLine(y - 1);
+        var buffer = v.term.buffer.active;
+        var line = buffer.getLine(y - 1);
         if (!line) { cb(undefined); return; }
-        var text = line.translateToString(true);
+        // xterm 은 긴 경로를 여러 화면 줄로 접는다. 이어진 줄을 한 논리 줄로
+        // 합쳐야 앞부분을 잃지 않고 실제 파일 경로를 열 수 있다.
+        var first = y - 1, last = y - 1;
+        while (first > 0 && first > y - 16 && buffer.getLine(first).isWrapped) first--;
+        while (last < y + 14 && buffer.getLine(last + 1)?.isWrapped) last++;
+        var parts = [], text = '';
+        for (var row = first; row <= last; row++) {
+          var partLine = buffer.getLine(row);
+          var partText = partLine.translateToString(true);
+          parts.push({ line: partLine, y: row + 1, start: text.length, end: text.length + partText.length });
+          text += partText;
+        }
         var links = [], quoted = [], m;
         QUOTED_MD_PATH_RE.lastIndex = 0;
         while ((m = QUOTED_MD_PATH_RE.exec(text)) !== null) {
           if (!m[1].includes(' ')) continue;
           quoted.push({ start: m.index + 1, end: m.index + 1 + m[1].length });
-          links.push(mdLink(v, m[1], m.index + 1, y));
+          links.push(mdLink(v, m[1], mdLinkRange(parts, m.index + 1, m[1].length)));
         }
         MD_PATH_RE.lastIndex = 0;
         while ((m = MD_PATH_RE.exec(text)) !== null) {
@@ -531,17 +543,45 @@
           if (lead) raw = raw.slice(lead[0].length);
           raw = raw.replace(/[)\]},.;:'"`]+$/, '');
           if (!raw || raw.length < 4) continue;
-          links.push(mdLink(v, raw, m.index + (lead ? lead[0].length : 0), y));
+          links.push(mdLink(v, raw, mdLinkRange(parts, m.index + (lead ? lead[0].length : 0), raw.length)));
         }
+        links = links.filter(function (link) {
+          return link.range.start && link.range.end &&
+            link.range.start.y <= y && y <= link.range.end.y;
+        });
         cb(links.length ? links : undefined);
       }
     });
   }
 
-  function mdLink(v, raw, index, y) {
+  function mdLinkRange(parts, start, length) {
+    function point(index, end) {
+      for (var part of parts) {
+        if (index < part.start || index >= part.end) continue;
+        var offset = index - part.start;
+        var line = part.line;
+        if (line.getCell) {
+          var chars = 0;
+          for (var col = 0; col < line.length; col++) {
+            var cell = line.getCell(col);
+            if (!cell || !cell.getWidth()) continue;
+            var width = cell.getWidth();
+            var count = (cell.getChars() || ' ').length;
+            if (offset < chars + count) return { x: col + (end ? width : 1), y: part.y };
+            chars += count;
+          }
+        }
+        return { x: offset + 1, y: part.y };
+      }
+      return null;
+    }
+    return { start: point(start, false), end: point(start + length - 1, true) };
+  }
+
+  function mdLink(v, raw, range) {
     return {
       text: raw,
-      range: { start: { x: index + 1, y: y }, end: { x: index + raw.length, y: y } },
+      range: range,
       activate: function (ev) {
         if (CC.openMd) CC.openMd(raw, v.info.cwd);
         else note('문서 탭을 쓸 수 없습니다', true);

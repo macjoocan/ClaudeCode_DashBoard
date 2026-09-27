@@ -5,6 +5,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../public/term.js'), 'utf8');
 const line = source.split('\n').find(l => l.indexOf('var MD_PATH_RE =') >= 0);
@@ -62,4 +63,57 @@ test('한 줄에 여러 개도 각각 잡는다', () => {
 test('공백이 든 경로는 온전히 잡지 못한다 (알려진 한계)', () => {
   const got = hits('C:\\Program Files\\x\\a.md');
   assert.notEqual(got[0], 'C:\\Program Files\\x\\a.md');
+});
+
+test('접힌 터미널 두 줄의 문서 경로를 어느 줄에서 눌러도 전체 파일로 연다', () => {
+  const first = '📄 docs/superpowers/specs/2026-09-27-orderflow-paper-';
+  const second = 'forward-validation-design.md';
+  const lines = [first, second].map((text, i) => ({
+    isWrapped: i > 0,
+    translateToString: () => text,
+  }));
+  let provider, opened;
+  const v = { info: { cwd: 'D:\\CoinTrade' }, term: {
+    buffer: { active: { length: lines.length, getLine: i => lines[i] } },
+    registerLinkProvider: p => { provider = p; },
+  } };
+  const start = source.indexOf('  var MD_PATH_RE =');
+  const end = source.indexOf('  // 패인 머리글:', start);
+  const ctx = { CC: { openMd: (file, cwd) => { opened = { file, cwd }; } } };
+  vm.createContext(ctx);
+  vm.runInContext(source.slice(start, end), ctx);
+  ctx.registerMdLinks(v);
+  for (const y of [1, 2]) {
+    let links;
+    provider.provideLinks(y, value => { links = value; });
+    assert.equal(links?.length, 1);
+    assert.equal(links[0].text, first.slice(3) + second);
+    assert.equal(links[0].range.start.y, 1);
+    assert.equal(links[0].range.end.y, 2);
+    links[0].activate();
+    assert.deepEqual(opened, { file: first.slice(3) + second, cwd: 'D:\\CoinTrade' });
+  }
+});
+
+test('다른 줄에만 있는 링크는 현재 줄의 링크로 돌려주지 않는다', () => {
+  const lines = ['docs/a.md and ', 'docs/b.md'].map((text, i) => ({
+    isWrapped: i > 0,
+    translateToString: () => text,
+  }));
+  let provider;
+  const v = { info: { cwd: 'D:\\CoinTrade' }, term: {
+    buffer: { active: { getLine: i => lines[i] } },
+    registerLinkProvider: p => { provider = p; },
+  } };
+  const start = source.indexOf('  var MD_PATH_RE =');
+  const end = source.indexOf('  // 패인 머리글:', start);
+  const ctx = { CC: {} };
+  vm.createContext(ctx);
+  vm.runInContext(source.slice(start, end), ctx);
+  ctx.registerMdLinks(v);
+  let firstLinks, secondLinks;
+  provider.provideLinks(1, value => { firstLinks = value; });
+  provider.provideLinks(2, value => { secondLinks = value; });
+  assert.deepEqual(Array.from(firstLinks, link => link.text), ['docs/a.md']);
+  assert.deepEqual(Array.from(secondLinks, link => link.text), ['docs/b.md']);
 });
