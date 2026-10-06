@@ -91,6 +91,42 @@ test('Ctrl+C without a selection still reaches the CLI as interrupt', () => {
   assert.equal(e.prevented, false);
 });
 
+test('output copy recognizes the physical C key during Korean IME input', async () => {
+  const copied = [];
+  const f = fixture({ writeText: text => { copied.push(text); return Promise.resolve(); } });
+  const e = key('Process', { code: 'KeyC', keyCode: 229, isComposing: true });
+  assert.equal(f.term.key(e), false);
+  assert.equal(e.prevented, true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(copied, ['first selection']);
+  assert.match(f.notices[0][0], /복사됨/);
+});
+
+test('terminal surface catches output copy before xterm input handling', async () => {
+  const copied = [];
+  const f = fixture({ writeText: text => { copied.push(text); return Promise.resolve(); } });
+  const e = key('c', { stopped: false, stopPropagation() { this.stopped = true; } });
+  assert.ok(f.listeners.keydown, 'copy must work outside the hidden input');
+  assert.equal(f.listeners.keydown.options, true);
+  f.listeners.keydown.fn(e);
+  assert.equal(e.prevented, true);
+  assert.equal(e.stopped, true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(copied, ['first selection']);
+});
+
+test('surface copy handler leaves unselected Ctrl+C and other keys alone', () => {
+  const f = fixture();
+  assert.ok(f.listeners.keydown);
+  f.term.selection = '';
+  const e = key('c', { code: 'KeyC', stopPropagation() { throw new Error('intercepted SIGINT'); } });
+  f.listeners.keydown.fn(e);
+  assert.equal(e.prevented, false);
+  const paste = key('v', { stopPropagation() { throw new Error('intercepted paste'); } });
+  f.listeners.keydown.fn(paste);
+  assert.equal(paste.prevented, false);
+});
+
 function screen(f, texts, cursorY, cursorX = 5, wrapped = []) {
   f.term.cols = 40;
   f.term.rows = texts.length;

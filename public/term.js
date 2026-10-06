@@ -829,8 +829,27 @@
   function wireClipboard(v, body) {
     var term = v.term;
 
+    function handleOutputCopy(e) {
+      if (e.type !== 'keydown' || !e.ctrlKey || e.altKey || e.metaKey) return false;
+      // IMEs can report "Process" or a Korean character as key. The physical
+      // shortcut must still copy the selected output instead of reaching PTY.
+      var copyKey = e.code === 'KeyC' || (e.key || '').toLowerCase() === 'c';
+      var insertKey = e.code === 'Insert' || (e.key || '').toLowerCase() === 'insert';
+      if ((!copyKey && !(insertKey && !e.shiftKey)) || !term.hasSelection()) return false;
+      e.preventDefault();
+      copySelection(v);
+      return true;
+    }
+
+    // Catch selection-copy on the terminal surface before xterm's hidden input
+    // and composition handlers. Stop propagation so one key writes only once.
+    body.addEventListener('keydown', function (e) {
+      if (handleOutputCopy(e)) e.stopPropagation();
+    }, true);
+
     term.attachCustomKeyEventHandler(function (e) {
       if (e.type !== 'keydown') return true;
+      if (handleOutputCopy(e)) return false;
       var ctrl = e.ctrlKey && !e.altKey && !e.metaKey;
       var k = (e.key || '').toLowerCase();
 
@@ -845,7 +864,6 @@
 
       if (ctrl && !e.shiftKey && k === 'c') {
         // 선택이 있으면 복사하고 PTY 로 보내지 않는다. 없으면 평소대로 SIGINT.
-        if (term.hasSelection()) { e.preventDefault(); copySelection(v); return false; }
         return true;
       }
       if (ctrl && e.shiftKey && k === 'c') { e.preventDefault(); copySelection(v); return false; }
