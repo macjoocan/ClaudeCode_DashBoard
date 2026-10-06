@@ -667,9 +667,10 @@
   //   Ctrl+C          선택이 있으면 복사, 없으면 SIGINT (그대로 통과)
   //   Ctrl+V          붙여넣기 (xterm 기본 - 건드리지 않는다)
   //   Ctrl+Shift+C    항상 복사
-  //   Ctrl+Shift+V    붙여넣기 (클립보드 직접 읽기)
+  //   Ctrl+Shift+V    붙여넣기 (브라우저 기본 paste 이벤트)
   //   Ctrl+Insert     복사        Shift+Insert  붙여넣기   (고전 윈도 방식)
-  //   Ctrl+Shift+A    전체 선택   (Ctrl+A 는 TUI 가 줄 처음 이동에 쓰므로 건드리지 않는다)
+  //   Ctrl+A                   커서가 있는 프롬프트의 표시 텍스트 선택
+  //   Ctrl+Shift+A             터미널 표시 텍스트 전체 선택
   //   우클릭          선택이 있으면 복사, 없으면 붙여넣기 (cmd 빠른 편집 방식)
   //   가운데 클릭      붙여넣기
   //
@@ -699,17 +700,25 @@
 
   // 클립보드 API 가 막힌 경우를 위한 예비 수단
   function legacyCopy(text) {
+    var previous = document.activeElement;
+    var ta;
     try {
-      var ta = document.createElement('textarea');
+      ta = document.createElement('textarea');
       ta.value = text;
       ta.setAttribute('readonly', '');
       ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
       document.body.appendChild(ta);
       ta.select();
-      var ok = document.execCommand('copy');
-      document.body.removeChild(ta);
-      return ok;
+      return document.execCommand('copy');
     } catch (e) { return false; }
+    finally {
+      if (ta) { try { document.body.removeChild(ta); } catch (e) {} }
+      // Removing the temporary textarea does not restore keyboard focus. Without
+      // this, the next Ctrl+V goes to the page until the terminal is clicked again.
+      if (previous && previous.focus) {
+        try { previous.focus({ preventScroll: true }); } catch (e) {}
+      }
+    }
   }
 
   function copySelection(v) {
@@ -719,7 +728,8 @@
       if (ok) {
         var n = text.length;
         note('복사됨 · ' + (n > 999 ? (n / 1000).toFixed(1) + 'k' : n) + '자');
-        v.term.clearSelection();      // 다음 Ctrl+C 는 SIGINT 로 가게 한다
+        // Keep the selection: the user may copy again or have selected new text
+        // while the OS clipboard operation was pending.
       } else {
         note('복사 실패 - Ctrl+Shift+C 로 다시 시도해 보세요', true);
       }
@@ -727,17 +737,93 @@
   }
 
   function pasteClipboard(v) {
-    if (!navigator.clipboard || !navigator.clipboard.readText) {
-      note('이 브라우저에서는 Ctrl+V 로 붙여넣어 주세요', true);
-      return;
-    }
-    navigator.clipboard.readText().then(function (text) {
-      if (!text) return;
-      v.term.paste(text);             // 괄호 붙여넣기(bracketed paste) 규약을 지킨다
-      v.term.focus();
-    }, function () {
-      note('클립보드를 읽지 못했습니다 - Ctrl+V 를 쓰세요', true);
+    return pasteWindowsFiles(v).catch(function () { return false; }).then(function (handled) {
+      if (handled) return;
+      if (!navigator.clipboard || !navigator.clipboard.readText) {
+        note('이 브라우저에서는 Ctrl+V 로 붙여넣어 주세요', true);
+        return;
+      }
+      return navigator.clipboard.readText().then(function (text) {
+        if (!text) return;
+        v.term.paste(text);
+        v.term.focus();
+      }, function () { note('클립보드를 읽지 못했습니다 - Ctrl+V 를 쓰세요', true); });
     });
+  }
+
+  function pasteWindowsFiles(v, request) {
+    return post('/api/clipboard-files', {}).then(function (j) {
+      if (request && v.filePasteRequest !== request) return false;
+      if (!j.files || !j.files.length || v.alive === false) return false;
+      var text = j.files.map(function (f) { return quoteIfNeeded(f.path); }).join(' ') + ' ';
+      v.term.paste(text);
+      v.term.focus();
+      note(j.files.length + '개 파일 경로를 넣었습니다' + (j.skipped ? ' (' + j.skipped + '개 제외)' : ''));
+      return true;
+    });
+  }
+
+  function cancelFilePaste(v) {
+    if (v.filePasteRequest) clearTimeout(v.filePasteRequest.timer);
+    v.filePasteRequest = null;
+  }
+
+  function scheduleFilePaste(v) {
+    cancelFilePaste(v);
+    var request = {};
+    v.filePasteRequest = request;
+    // Native text/image paste wins; only hidden Explorer payloads use the bridge.
+    request.timer = setTimeout(function () {
+      pasteWindowsFiles(v, request).catch(function () {
+        if (v.filePasteRequest === request) note('파일 붙여넣기를 읽지 못했습니다. 서버를 최신 버전으로 다시 실행해 주세요', true);
+      });
+    }, 250);
+  }
+
+  function selectPrompt(v) {
+    var term = v.term, buffer = term.buffer && term.buffer.active;
+    if (!buffer) return false;
+    var cursor = buffer.baseY + buffer.cursorY;
+    var first = cursor, start = -1;
+    var border = /^\s*[─━═╭╰┌└][─━═│┬┴╮╯┐┘\s]*$/;
+    // Only inspect the active screen, never old conversation in scrollback.
+    for (; first >= buffer.baseY; first--) {
+      var line = buffer.getLine(first);
+      if (!line) return false;
+      var text = line.translateToString(true);
+      if (border.test(text)) break;
+      var marker = !line.isWrapped && text.match(/^\s*[❯›>] /);
+      if (marker) { start = marker[0].length; break; }
+    }
+    if (start < 0) return false;
+    var boxed = false;
+    for (var b = cursor + 1; b < buffer.baseY + term.rows; b++) {
+      var below = buffer.getLine(b);
+      if (!below) break;
+      var belowText = below.translateToString(true);
+      if (border.test(belowText)) { boxed = true; break; }
+      if (!below.isWrapped && /^\s*[❯›>] /.test(belowText)) break;
+    }
+    // Do not swallow a footer or menu below the input. Claude encloses its
+    // input in rules; Codex separates the composer from its footer by a blank.
+    var last = cursor;
+    for (var y = cursor + 1; y < buffer.baseY + term.rows; y++) {
+      var next = buffer.getLine(y);
+      if (!next) break;
+      var s = next.translateToString(true);
+      if (border.test(s) || (!boxed && !s.trim()) || (!next.isWrapped && /^\s*[❯›>] /.test(s))) break;
+      last = y;
+    }
+    // Buffer cells, rather than JS string length, account for Korean/wide glyphs.
+    var end = 0, tail = buffer.getLine(last);
+    for (var x = 0; x < term.cols; x++) {
+      var cell = tail.getCell(x);
+      if (cell && /\S/.test(cell.getChars())) end = x + Math.max(1, cell.getWidth ? cell.getWidth() : 1);
+    }
+    var length = (last - first) * term.cols + end - start;
+    if (length <= 0) return false;
+    term.select(start, first, length);
+    return true;
   }
 
   function wireClipboard(v, body) {
@@ -751,6 +837,7 @@
       // Alt+← / Alt+→ : 패인을 앞뒤 자리로. 전역 키 핸들러는 #termwrap 안에서
       // 물러나므로(터미널 입력을 가로채지 않으려고) 여기서 직접 받는다.
       if (e.altKey && !e.ctrlKey && !e.metaKey && (k === 'arrowleft' || k === 'arrowright')) {
+        e.preventDefault();
         nudge(v.info.id, k === 'arrowleft' ? -1 : 1);
         if (onChange) onChange();
         return false;
@@ -758,11 +845,11 @@
 
       if (ctrl && !e.shiftKey && k === 'c') {
         // 선택이 있으면 복사하고 PTY 로 보내지 않는다. 없으면 평소대로 SIGINT.
-        if (term.hasSelection()) { copySelection(v); return false; }
+        if (term.hasSelection()) { e.preventDefault(); copySelection(v); return false; }
         return true;
       }
-      if (ctrl && e.shiftKey && k === 'c') { copySelection(v); return false; }
-      if (ctrl && !e.shiftKey && k === 'insert') { copySelection(v); return false; }
+      if (ctrl && e.shiftKey && k === 'c') { e.preventDefault(); copySelection(v); return false; }
+      if (ctrl && !e.shiftKey && k === 'insert') { e.preventDefault(); copySelection(v); return false; }
 
       // 붙여넣기.
       //
@@ -771,10 +858,15 @@
       // 여기서 false 를 돌려주면 xterm 이 손을 떼고 preventDefault 도 하지 않으므로
       // 브라우저가 평소처럼 붙여넣고, 그 paste 이벤트를 xterm 이 받아 PTY 로 보낸다.
       // (클립보드 읽기 권한이 필요 없다)
-      if (ctrl && k === 'v') return false;                    // Ctrl+V, Ctrl+Shift+V
-      if (!ctrl && e.shiftKey && k === 'insert') return false; // Shift+Insert
+      if (ctrl && k === 'v') { scheduleFilePaste(v); return false; } // Ctrl+V, Ctrl+Shift+V
+      if (!ctrl && e.shiftKey && k === 'insert') { scheduleFilePaste(v); return false; }
 
-      if (ctrl && e.shiftKey && k === 'a') { term.selectAll(); return false; }
+      if (ctrl && k === 'a') {
+        e.preventDefault();
+        if (e.shiftKey) term.selectAll();
+        else if (!selectPrompt(v)) note('현재 화면에서 입력 프롬프트를 찾지 못했습니다', true);
+        return false;
+      }
 
       return true;   // 그 밖의 키는 전부 PTY 로
     });
@@ -782,9 +874,12 @@
     // 우클릭: 선택 있으면 복사, 없으면 붙여넣기
     body.addEventListener('contextmenu', function (e) {
       e.preventDefault();
+      // xterm's own contextmenu handler moves/selects its hidden textarea for
+      // the native menu. Our quick copy/paste replaces that menu entirely.
+      e.stopPropagation();
       if (term.hasSelection()) copySelection(v);
       else pasteClipboard(v);
-    });
+    }, true);
 
     // 가운데 클릭 붙여넣기
     body.addEventListener('auxclick', function (e) {
@@ -850,7 +945,8 @@
       if (!done.length) return;
       // 경로 앞뒤에 공백을 둬서 이미 쓰던 문장에 자연스럽게 붙게 한다
       var text = done.map(function (j) { return quoteIfNeeded(j.path); }).join(' ') + ' ';
-      sendMsg(v, { t: 'i', d: text });
+      if (v.alive === false) return;
+      v.term.paste(text);
       try { v.term.focus(); } catch (e) {}
       var bytes = done.reduce(function (s, j) { return s + j.bytes; }, 0);
       note(done.length + '개 경로를 넣었습니다 · ' + humanSize(bytes)
@@ -863,10 +959,17 @@
     // 텍스트 붙여넣기는 건드리지 않는다 - xterm 의 기본 경로로 그냥 흘려보낸다.
     body.addEventListener('paste', function (e) {
       var files = filesFrom(e.clipboardData);
+      var text = '';
+      try { text = e.clipboardData.getData('text/plain'); } catch (err) {}
+      if (files.length || text) cancelFilePaste(v);
       if (!files.length) return;          // 평범한 텍스트 붙여넣기
       e.preventDefault();
       e.stopPropagation();
-      sendFiles(v, files);
+      // Explorer may expose only a bitmap preview to the browser, even when its
+      // FileDropList contains several originals. Prefer the complete native list.
+      pasteWindowsFiles(v).catch(function () { return false; }).then(function (handled) {
+        if (!handled) return sendFiles(v, files);
+      });
     }, true);
   }
 

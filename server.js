@@ -35,6 +35,7 @@ const { createHandoff } = require('./handoff');
 const { wtArgs } = require('./launch-args');
 const { taskkillOutcome } = require('./kill-result');
 const { pendingPrompt } = require('./tui-state');
+const { readClipboardFiles } = require('./clipboard-files');
 const scribe = require('./scribe');
 const documents = require('./documents');
 const { resolveMarkdownPath } = require('./md-resolve');
@@ -46,7 +47,7 @@ const HOOK_URL = `http://${'127.0.0.1'}:${Number(process.env.CC_LAUNCHER_PORT ||
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CC_LAUNCHER_PORT || 7788);
-const API_VERSION = 7; // launchers use this to distinguish a stale in-memory server
+const API_VERSION = 8; // launchers use this to distinguish a stale in-memory server
 const CLAUDE_HOME = path.join(os.homedir(), '.claude');
 const PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects');
 const LIVE_DIR = path.join(CLAUDE_HOME, 'sessions'); // <pid>.json = 살아있는 세션 상태
@@ -1025,6 +1026,9 @@ const server = http.createServer(async (req, res) => {
     // PTY 는 텍스트만 흘려보내므로 이미지·파일 자체는 터미널로 못 보낸다.
     // 대신 파일을 저장하고 그 **경로**를 프롬프트에 찍어주면 CLI 가 읽는다
     // (공식 문서의 "Provide an image path to Claude" 방식).
+    if (url.pathname === '/api/clipboard-files' && req.method === 'POST') {
+      return json(res, 200, { ok: true, ...await readClipboardFiles() });
+    }
     if (url.pathname === '/api/paste-file' && req.method === 'POST') {
       // 다 받고 나서 끊으면 클라이언트는 그냥 "네트워크 오류"만 본다.
       // 길이를 미리 보고 제대로 된 메시지로 거절한다.
