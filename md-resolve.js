@@ -1,9 +1,22 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const { fileURLToPath } = require('node:url');
+
+function normalizeMarkdownPath(input) {
+  let raw = String(input || '').trim().replace(/^["'`<]|["'`>]$/g, '');
+  if (/^file:\/\//i.test(raw)) raw = fileURLToPath(raw);
+  if (process.platform === 'win32') {
+    // CLI Markdown links use /C:/...; Git Bash prints /c/.... Neither is
+    // a native Windows root-relative path (path.resolve would produce C:\C:\...).
+    raw = raw.replace(/^[\\/]([a-z]:[\\/])/i, '$1');
+    raw = raw.replace(/^\/([a-z])\//i, (_, drive) => drive.toUpperCase() + ':/');
+  }
+  return raw;
+}
 
 function resolveMarkdownPath(input, cwd, roots = []) {
-  const raw = String(input || '').trim().replace(/^["'`]|["'`]$/g, '');
+  const raw = normalizeMarkdownPath(input);
   if (!raw) throw new Error('경로가 비어 있습니다');
   if (!/\.(md|markdown)$/i.test(raw)) throw new Error('마크다운 파일이 아닙니다');
   const full = path.resolve(path.isAbsolute(raw) ? raw : path.join(String(cwd || ''), raw));

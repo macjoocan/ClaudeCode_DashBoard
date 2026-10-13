@@ -542,15 +542,23 @@
           text += partText;
         }
         var links = [], quoted = [], m;
+        // Parse Markdown destinations before plain paths so the label is never
+        // included in the file name. Angle brackets allow spaces in the path.
+        var markdown = /\[([^\]\r\n]*)\]\((?:<([^<>\r\n]+\.(?:md|markdown))>|([^\s<>]+?\.(?:md|markdown)))(?::\d+(?::\d+)?)?(?:#[^\s)]*)?\)/gi;
+        while ((m = markdown.exec(text)) !== null) {
+          quoted.push({ start: m.index, end: m.index + m[0].length });
+          links.push(mdLink(v, m[2] || m[3], mdLinkRange(parts, m.index, m[0].length)));
+        }
         QUOTED_MD_PATH_RE.lastIndex = 0;
         while ((m = QUOTED_MD_PATH_RE.exec(text)) !== null) {
+          if (quoted.some(q => m.index < q.end && m.index + m[0].length > q.start)) continue;
           if (!m[1].includes(' ')) continue;
           quoted.push({ start: m.index + 1, end: m.index + 1 + m[1].length });
           links.push(mdLink(v, m[1], mdLinkRange(parts, m.index + 1, m[1].length)));
         }
         MD_PATH_RE.lastIndex = 0;
         while ((m = MD_PATH_RE.exec(text)) !== null) {
-          if (quoted.some(q => m.index >= q.start && m.index < q.end)) continue;
+          if (quoted.some(q => m.index < q.end && m.index + m[0].length > q.start)) continue;
           // 경로를 감싼 괄호·따옴표와 문장 끝 기호는 경로가 아니다.
           // 앞을 깎은 만큼 밑줄 위치도 밀어야 엉뚱한 칸에 그어지지 않는다.
           var raw = m[0];
@@ -623,6 +631,18 @@
       + '<span class="nm">' + escText(i.name || i.title || proj) + '</span>'
       + '<span class="pj">' + escText(proj) + ' · ' + st + rs + '</span>'
       + '<span class="sp"></span>'
+      + '<select class="pbtn" data-termpermission="' + id + '" aria-label="세션 권한 모드"'
+      + (!i.sessionId ? ' disabled' : '')
+      + ' title="선택한 세션을 재시작해 적용. 자동 심사는 확인이 남을 수 있습니다. 조직 정책·외부 앱 인증은 변경하지 않습니다.">'
+      + [['inherit', '권한: 기존 설정'], ['auto', '권한: 자동 심사'], ['full', '권한: 묻지 않기 (위험)']].map(function (p) {
+          return '<option value="' + p[0] + '"' + ((i.permissionMode || 'inherit') === p[0] ? ' selected' : '') + '>' + p[1] + '</option>';
+        }).join('') + '</select>'
+      + '<button class="pbtn ctx ay' + (i.autoYes ? ' on' : '') + '" data-termautoyes="' + id + '"'
+      +   (!i.alive ? ' disabled' : '')
+      +   ' title="자동 Yes - 권한 승인 메뉴(Do you want to proceed? ❯ 1. Yes)가 뜨면 1번을 대신 누른다.'
+      +   ' 업데이트·폴더 신뢰·플랜 승인은 누르지 않는다. 재시작 없이 바로 켜고 끈다.'
+      +   (i.autoYesCount ? ' 지금까지 ' + i.autoYesCount + '번 눌렀다.' : '') + '">'
+      +   '자동 Yes' + (i.autoYes && i.autoYesCount ? ' ' + i.autoYesCount : '') + '</button>'
       + '<button class="pbtn fav ' + (i.fav ? 'on' : '') + '" data-termfav="' + id + '"'
       +   (!i.sessionId ? ' disabled' : '')
       +   ' title="이 세션 즐겨찾기">' + (i.fav ? '★' : '☆') + '</button>'
@@ -1396,14 +1416,20 @@
   }
 
   // 재시작: CLI 프로세스만 갈아끼운다. 터미널 id 가 유지되므로 자리·크기가 그대로다.
-  function restart(id) {
+  async function restart(id, permissionMode) {
     var v = views.get(id);
     if (!v) return Promise.resolve();
+    if (permissionMode !== undefined) {
+      var health = await fetch('/api/health', { cache: 'no-store' }).then(function (r) { return r.json(); });
+      if (!health.capabilities || !health.capabilities.sessionPermissionMode)
+        throw new Error('권한 모드 적용에는 대시보드 서버 재시작이 필요합니다');
+    }
     v.term.write('\r\n\x1b[38;5;101m[재시작 중...]\x1b[m\r\n');
-    return post('/api/term/restart', { id: id }).then(function (j) {
+    return post('/api/term/restart', { id: id, permissionMode: permissionMode,
+      confirmFullAccess: permissionMode === 'full' }).then(function (j) {
       if (j.error) {
         v.term.write('\r\n\x1b[38;5;131m[재시작 실패: ' + j.error + ']\x1b[m\r\n');
-        return;
+        throw new Error(j.error);
       }
       v.info = j.term;
       v.alive = j.term.alive;

@@ -37,12 +37,31 @@ const base = {
   text: '이 설계를 검토해 줘',
 };
 
-test('같은 provider 사이 전달은 거부한다', async () => {
+test('자기 자신에게 전달은 거부한다', async () => {
   const f = fixture();
   await assert.rejects(() => f.bridge.send({ ...base,
-    target: { ...base.target, provider: 'claude' } }), /사이에서만/);
+    target: { ...base.target, provider: 'claude', id: 'c1' } }), /자기 자신/);
+  assert.equal(f.terms.length, 0);
   f.bridge.close();
 });
+
+for (const provider of ['claude', 'codex']) {
+  test(provider + ' 같은 AI 간에도 대기 후 한 번만 전달한다', async () => {
+    const term = { id: 'receiver', provider, sessionId: 's2', alive: true,
+      status: 'waiting', startedAt: 0, lastAt: 0 };
+    const f = fixture(term);
+    try {
+      const msg = await f.bridge.send({ ...base,
+        source: { ...base.source, provider, id: 's1' }, target: { ...base.target, provider, id: 's2' } });
+      assert.equal(msg.status, 'queued');
+      assert.equal(f.writes.length, 0);
+      term.status = 'idle'; f.bridge.pump(); f.bridge.pump();
+      assert.equal(f.writes.length, 1);
+      assert.equal(f.writes[0].id, 'receiver');
+      assert.equal(f.bridge.get(msg.id).status, 'delivered');
+    } finally { f.bridge.close(); }
+  });
+}
 
 test('꺼진 대상은 재개하고 준비된 뒤 한 번만 전달한다', async () => {
   const f = fixture();

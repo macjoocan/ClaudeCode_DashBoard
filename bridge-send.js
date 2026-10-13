@@ -111,17 +111,16 @@ async function listTargets(all) {
   }
   if (!text) { console.error('보낼 말을 적어 주세요.'); process.exitCode = 1; return; }
 
-  // 발신은 반대편 provider 여야 한다. 지금 폴더에서 돌고 있는 것을 먼저 고른다.
-  const wantFrom = target.provider === 'codex' ? 'claude' : 'codex';
+  // MCP 와 같은 발신 선택 규칙을 사용한다. 모호하면 --from 으로 지정한다.
   let source = FROM ? all.find(s => s.id === FROM) : null;
   if (FROM && !source) { console.error('--from 세션을 찾지 못했습니다: ' + FROM); process.exitCode = 1; return; }
   if (!source) {
-    const mine = all.filter(s => s.provider === wantFrom);
-    source = mine.find(s => s.live && sameDir(s.cwd, process.cwd()))
-          || mine.find(s => s.live)
-          || mine.sort((a, b) => b.mtime - a.mtime)[0];
+    source = require('./mcp-bridge').pickSource(all, target, process.cwd());
   }
-  if (!source) { console.error('발신으로 쓸 ' + wantFrom + ' 세션이 없습니다.'); process.exitCode = 1; return; }
+  if (!source) { console.error('발신을 확인할 수 없습니다. --from 세션-ID 를 지정해 주세요.'); process.exitCode = 1; return; }
+  if (source.provider === target.provider && source.id === target.id) {
+    console.error('자기 자신에게는 전달할 수 없습니다.'); process.exitCode = 1; return;
+  }
 
   console.log('발신: ' + source.provider + ' ' + source.id + '  (' + source.project + ')');
   console.log('대상: ' + target.provider + ' ' + target.id + '  (' + target.project + ')');

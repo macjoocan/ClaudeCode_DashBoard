@@ -36,6 +36,7 @@ const { wtArgs } = require('./launch-args');
 const { taskkillOutcome } = require('./kill-result');
 const { pendingPrompt } = require('./tui-state');
 const { readClipboardFiles } = require('./clipboard-files');
+const { requestedMode } = require('./permission-mode');
 const scribe = require('./scribe');
 const documents = require('./documents');
 const { resolveMarkdownPath } = require('./md-resolve');
@@ -47,7 +48,7 @@ const HOOK_URL = `http://${'127.0.0.1'}:${Number(process.env.CC_LAUNCHER_PORT ||
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CC_LAUNCHER_PORT || 7788);
-const API_VERSION = 8; // launchers use this to distinguish a stale in-memory server
+const API_VERSION = 9; // launchers use this to distinguish a stale in-memory server
 const CLAUDE_HOME = path.join(os.homedir(), '.claude');
 const PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects');
 const LIVE_DIR = path.join(CLAUDE_HOME, 'sessions'); // <pid>.json = 살아있는 세션 상태
@@ -932,7 +933,8 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (url.pathname === '/api/health') {
-      return json(res, 200, { ok: true, app: 'cc-launcher', apiVersion: API_VERSION, port: PORT });
+      return json(res, 200, { ok: true, app: 'cc-launcher', apiVersion: API_VERSION, port: PORT,
+        capabilities: { sessionPermissionMode: true, autoYes: true } });
     }
 
     if (url.pathname === '/api/projects') {
@@ -1456,6 +1458,13 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, fav: i < 0 });
     }
 
+    if (url.pathname === '/api/term/autoyes' && req.method === 'POST') {
+      const b = await readBody(req);
+      const t = terminals.setAutoYes(String(b.id || ''), b.on === true);
+      if (!t) throw new Error('실행 중인 터미널이 없습니다');
+      return json(res, 200, { ok: true, term: terminals.info(t) });
+    }
+
     if (url.pathname === '/api/term/context' && req.method === 'POST') {
       const b = await readBody(req);
       const id = String(b.id || '');
@@ -1508,7 +1517,8 @@ const server = http.createServer(async (req, res) => {
       const source = findScannedSession(b.sourceProvider, String(b.sourceId || ''), projects);
       const target = findScannedSession(b.targetProvider, String(b.targetId || ''), projects);
       if (!source || !target) throw new Error('세션을 찾지 못했습니다. 목록을 새로고침해 주세요');
-      if (source.s.provider === target.s.provider) throw new Error('Claude와 Codex 사이에서만 전달할 수 있습니다');
+      if (source.s.provider === target.s.provider && source.s.id === target.s.id)
+        throw new Error('자기 자신에게는 전달할 수 없습니다');
       const embedded = terminals.list().find(t => t.alive && t.provider === target.s.provider
         && t.sessionId === target.s.id);
       // Codex 의 라이브 표시는 훅이 남긴 파일이고, 세션이 끝나도 최대 하루를 버틴다
@@ -1550,6 +1560,7 @@ const server = http.createServer(async (req, res) => {
         claudeBin: CLAUDE_BIN,
         provider: b.provider === 'codex' ? 'codex' : 'claude',
         codexBin: CODEX_BIN,
+        permissionMode: requestedMode(b),
       });
       return json(res, 200, { ok: true, term: terminals.info(t) });
     }
@@ -1557,7 +1568,8 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/term/restart' && req.method === 'POST') {
       const b = await readBody(req);
       const t = await terminals.restart(String(b.id || ''),
-        { claudeBin: CLAUDE_BIN, codexBin: CODEX_BIN });
+        { claudeBin: CLAUDE_BIN, codexBin: CODEX_BIN,
+          permissionMode: b.permissionMode === undefined ? undefined : requestedMode(b) });
       if (!t) throw new Error('터미널이 없습니다');
       return json(res, 200, { ok: true, term: terminals.info(t) });
     }

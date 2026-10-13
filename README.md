@@ -1038,7 +1038,7 @@ node C:/00.SVN/Claude_code/cc-launcher/bridge-send.js                      # 보
 node C:/00.SVN/Claude_code/cc-launcher/bridge-send.js <세션ID> "보낼 말"   # 보내기
 ```
 
-발신은 지금 폴더에서 돌고 있는 반대편 세션을 알아서 고른다(`--from` 으로 지정 가능).
+발신은 대상을 제외한 같은 폴더의 실행 중 세션이 하나일 때만 자동 선택한다. 여러 개면 `--from`으로 지정한다.
 보낸 뒤에는 **도착이 확인될 때까지** 상태를 찍고, 실패하면 사유를 낸다.
 
 ## 세션에서 도구로 보내기 (MCP 서버)
@@ -1060,9 +1060,11 @@ codex  mcp add cc-bridge             -- node C:/00.SVN/Claude_code/cc-launcher/m
 (`~/.claude.json` / `~/.codex/config.toml`). 한쪽만 넣고 다른 쪽에서 리로드해봐야 안 붙는다.
 등록한 뒤에는 그 CLI 를 **새로 켜야** 도구가 보인다.
 
-발신은 같은 폴더에서 돌고 있는 반대편 세션을 알아서 고른다. 한 폴더에 세션이 여러 개면
-엉뚱한 것이 발신으로 찍힐 수 있으므로, 자기 ID 를 알면 `from_session_id` 로 넘긴다.
-같은 provider 끼리는 거부한다 - 그건 각자의 기능(Claude 는 `SendMessage`)을 쓰는 게 맞다.
+Claude→Claude, Codex→Codex, Claude↔Codex 모두 지원한다. 자기 자신에게 전달하는 것은 거부한다.
+`from_session_id`로 발신을 지정하는 것을 권장한다. 생략하면 대상을 제외한 같은 폴더의 실행 중
+세션이 정확히 하나일 때만 자동 선택한다. 모호하면 전송하지 않고 ID 지정을 요청한다.
+`from_provider`, `target_provider`로 AI를 명시할 수 있다(ID 중복 시 필요).
+업데이트 후 대시보드 서버와 각 CLI의 `cc-bridge` MCP 연결을 다시 시작해야 반영된다.
 
 ### 왜 남의 것을 쓰지 않았나
 
@@ -1077,9 +1079,9 @@ codex  mcp add cc-bridge             -- node C:/00.SVN/Claude_code/cc-launcher/m
 
 ## Claude ↔ Codex 세션 메시지 전달
 
-세션 행, 프로젝트 카드, 대화 패널의 **다른 AI에게 전달** 버튼으로 현재 Claude 세션의
-내용을 Codex 세션에 보내거나, 반대로 Codex에서 Claude로 보낼 수 있다. 같은 provider
-끼리는 전달하지 않으며 대상 목록은 같은 프로젝트의 반대편 AI 세션을 먼저 보여준다.
+세션 행, 프로젝트 카드, 대화 패널의 **다른 세션에 전달** 버튼으로 현재 세션의
+내용을 다른 Claude 또는 Codex 세션에 보낼 수 있다. 같은 AI 간 전달도 지원하며,
+대상 목록은 자기 자신을 제외하고 같은 프로젝트의 세션을 먼저 보여준다.
 
 - 대상 목록에는 **세션 ID 앞 8자리**가 같이 나온다. Codex 는 제목이 빈 세션이 흔해서
   (실측 7개) 프로젝트·제목만으로는 어느 것인지 가릴 수 없다. 터미널의 `ID` 버튼이
@@ -1331,3 +1333,36 @@ Codex 쪽은 통째로 읽지 않는다: 사용량은 rollout 끝 256KB, 대화 
 - [claudecodeui](https://github.com/siteboon/claudecodeui) - 모바일/원격에서 세션 관리
 - [claude-session-dashboard](https://github.com/dlupiak/claude-session-dashboard) - `~/.claude` 읽기 전용 관측
 - [awesome-agent-orchestrators](https://github.com/andyrewlee/awesome-agent-orchestrators) - 오케스트레이터 목록
+# 세션별 권한 선택
+
+내장 터미널 머리글에서 `권한: 기존 설정 / 자동 심사 / 묻지 않기 (위험)`을 선택할 수 있습니다.
+첫 대화를 시작해 세션 ID가 확인되면 활성화됩니다. 변경은 경고 확인 후 선택한 CLI를 재시작하며,
+진행 중인 작업은 중단됩니다. 저장된 대화와 패인 위치는 유지됩니다.
+
+- 기존 설정: 기존 실행 방식으로 복귀합니다. Codex는 기존 대시보드의 자동 심사 override를 유지합니다.
+- 자동 심사: Claude `--permission-mode auto`, Codex `workspace-write` + `on-request` + 자동 심사를 명시합니다. 확인이나 거부가 남을 수 있습니다.
+- 묻지 않기: Claude `--dangerously-skip-permissions`, Codex `danger-full-access` + `never`를 사용합니다. 파일 삭제·명령 실행의 확인을 생략하므로 신뢰할 수 있는 격리 환경에서만 사용하세요.
+
+선택은 해당 패인의 일반 재시작·컨텍스트 초기화에도 유지됩니다. 다른 패인·새 패인·AI 전환 대상에는 전파하지 않으며,
+사용자 전역 설정도 변경하지 않습니다. 표시값은 실행할 때 요청한 모드이며 CLI 내부에서 바꾼 모드까지 추적하지 않습니다.
+조직 정책, 외부 앱 인증, CLI가 강제하는 별도 신뢰 확인을 우회하거나 자동 클릭하지 않습니다.
+자동 모드가 어제부터 확인을 띄우기 시작한 정확한 원인은 실제 확인 메시지와 CLI 로그가 있어야 판별할 수 있습니다.
+
+공식 참고: [Claude 권한](https://code.claude.com/docs/en/permissions), [Codex 승인과 보안](https://developers.openai.com/codex/agent-approvals-security).
+
+# 자동 Yes (권한 승인 메뉴 대신 누르기)
+
+내장 터미널 머리글의 `자동 Yes` 를 켜면, 화면에 아래 같은 권한 승인 메뉴가 뜰 때 1번(Yes)을 대신 누릅니다.
+
+```
+Do you want to proceed?                          Would you like to run the following command?
+❯ 1. Yes                                         › 1. Yes, proceed (y)
+  2. No                                            2. Yes, and don't ask again ...
+```
+
+- 위의 `권한` 선택과 달리 CLI 설정을 바꾸지 않고 재시작도 없습니다. 패인마다 따로 켜고 끕니다(기본 꺼짐).
+- 누르는 것은 항상 **1번 Yes 한 번**입니다. "다시 묻지 않기"(2번)는 고르지 않으므로 다음 요청도 메뉴가 뜨고, 그때 또 누릅니다.
+- 폴더 신뢰·업데이트 알림·플랜 승인 메뉴는 누르지 않습니다. 사용자가 커서를 No 로 옮겨 두었으면 누르지 않습니다.
+- 켜기 전에 이미 떠 있던 메뉴는 켜는 순간 화면을 다시 그리게 해서 바로 처리합니다. 이어하기 재생 속 옛 메뉴에는 답하지 않습니다.
+- 1분에 20번을 넘게 누르면 무언가 잘못 돈다고 보고 스스로 꺼집니다. 버튼 옆 숫자는 지금까지 누른 횟수입니다.
+- 판정은 `auto-yes.js`. Claude 는 띄어쓰기를 커서 전진(`ESC[1C`), 줄을 절대 위치(`ESC[r;cH`)로 그리므로 이를 공백·줄바꿈으로 바꾼 뒤 문구를 봅니다.

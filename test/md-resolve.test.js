@@ -6,6 +6,18 @@ const os = require('node:os');
 const path = require('node:path');
 const { resolveMarkdownPath } = require('../md-resolve');
 
+test('Windows에서 Git Bash 경로와 file URL을 같은 실제 문서로 해석한다', { skip: process.platform !== 'win32' }, t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-md-link-'));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const actual = path.join(base, '한글 문서.md');
+  fs.writeFileSync(actual, '# test');
+  const slash = actual.replace(/\\/g, '/');
+  const bash = '/' + slash[0].toLowerCase() + slash.slice(2);
+  assert.equal(resolveMarkdownPath('/' + slash, __dirname).full, actual);
+  assert.equal(resolveMarkdownPath(bash, __dirname).full, actual);
+  assert.equal(resolveMarkdownPath(require('node:url').pathToFileURL(actual).href, __dirname).full, actual);
+});
+
 test('터미널 시작 폴더 밖의 프로젝트 작업 트리에서도 상대 문서 경로를 찾는다', t => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-md-resolve-'));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));

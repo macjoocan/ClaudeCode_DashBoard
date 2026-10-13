@@ -14,6 +14,24 @@ assert.ok(line, 'term.js 에서 MD_PATH_RE 를 찾지 못했다');
 const body = line.slice(line.indexOf('/') + 1, line.lastIndexOf('/g'));
 const RE = new RegExp(body, 'g');
 
+test('Markdown 링크는 표시 이름이 아니라 대상 파일을 연다', () => {
+  const text = '[설계 문서](/C:/docs/design.md:12) 그리고 [다른문서](<docs/한글 문서.md>)';
+  let provider;
+  const opened = [];
+  const line = { isWrapped: false, translateToString: () => text };
+  const ctx = { CC: { openMd: p => opened.push(p) } };
+  vm.createContext(ctx);
+  vm.runInContext(source.slice(source.indexOf('  var MD_PATH_RE ='), source.indexOf('  // 패인 머리글:')), ctx);
+  ctx.registerMdLinks({ info: { cwd: 'C:/test' }, term: {
+    buffer: { active: { getLine: i => i === 0 ? line : undefined } },
+    registerLinkProvider: p => { provider = p; }
+  } });
+  let links;
+  provider.provideLinks(1, result => { links = result; });
+  links.forEach(link => link.activate());
+  assert.deepEqual(opened, ['/C:/docs/design.md', 'docs/한글 문서.md']);
+});
+
 // term.js 의 registerMdLinks 와 같은 다듬기 (감싼 기호 제거)
 function hits(text) {
   RE.lastIndex = 0;

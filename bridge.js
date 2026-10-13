@@ -197,8 +197,9 @@ function createBridge(options) {
     const targetProvider = input?.target?.provider;
     if (!['claude', 'codex'].includes(sourceProvider)
         || !['claude', 'codex'].includes(targetProvider)) throw new Error('provider 가 올바르지 않습니다');
-    if (sourceProvider === targetProvider) throw new Error('Claude와 Codex 사이에서만 전달할 수 있습니다');
     if (!input.source.id || !input.target.id) throw new Error('발신·대상 세션이 필요합니다');
+    if (sourceProvider === targetProvider && String(input.source.id) === String(input.target.id))
+      throw new Error('자기 자신에게는 전달할 수 없습니다');
     const text = cleanText(input.text);
     if (!text) throw new Error('전달할 메시지를 입력해 주세요');
     if (text.length > MAX_TEXT) throw new Error('메시지는 12,000자까지 전달할 수 있습니다');

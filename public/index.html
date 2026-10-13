@@ -303,6 +303,7 @@
   .termpane .ph2 .pbtn.nav{font-size:10px;padding:2px 3px}
   .termpane .ph2 .pbtn.ctx{font-size:10px;padding:2px 5px;border:1px solid var(--line);border-radius:4px}
   .termpane .ph2 .pbtn.fav.on{color:var(--warn)}
+  .termpane .ph2 .pbtn.ay.on{color:var(--bg);background:var(--warn);border-color:var(--warn)}
   .termpane .ph2 .pbtn:disabled{opacity:.25;cursor:default}
   .termpane .ph2 .pbtn:disabled:hover{color:var(--dim2);background:none}
   .termpane .pb2{flex:1;min-height:0;padding:6px 2px 4px 8px;overflow:hidden}
@@ -791,7 +792,7 @@
     <button class="btn live xs" id="p-goterm" hidden>터미널로 이동</button>
     <button class="btn xs" id="p-focus" hidden>실행 중인 창 띄우기</button>
     <button class="btn xs" id="p-fav">&#9734; 즐겨찾기</button>
-    <button class="btn xs" id="p-bridge">다른 AI에게 전달</button>
+    <button class="btn xs" id="p-bridge">다른 세션에 전달</button>
     <div class="grow"></div>
     <button class="btn ghost xs" id="p-more">더 불러오기</button>
     <span class="ps" id="p-info"></span>
@@ -803,7 +804,7 @@
 <div id="bridgemodal" hidden>
   <div class="bbox" role="dialog" aria-modal="true" aria-labelledby="b-title">
     <div class="bhead">
-      <div class="grow"><div class="btitle" id="b-title">다른 AI에게 전달</div><div class="bsub" id="b-source"></div></div>
+      <div class="grow"><div class="btitle" id="b-title">다른 세션에 전달</div><div class="bsub" id="b-source"></div></div>
       <button class="icon" id="b-close" title="닫기">&#10005;</button>
     </div>
     <div class="bbody">
@@ -1376,7 +1377,7 @@ function sessionRow(p, s, emb){
     +   liveBtn(p, s, emb)
     +   killBtn(s, vk, emb)
     +   '<button class="btn xs" data-act="fork" data-provider="'+esc(s.provider)+'" data-cwd="'+esc(p.cwd)+'" data-sid="'+esc(s.id)+'" data-title="'+esc(s.title||'')+'" title="복제해서 새 세션 ID로 시작">포크</button>'
-    +   '<button class="btn ghost xs" data-bridge="'+vk+'" title="이 세션에서 반대쪽 AI 세션으로 메시지 전달">전달</button>'
+    +   '<button class="btn ghost xs" data-bridge="'+vk+'" title="이 세션에서 다른 Claude·Codex 세션으로 메시지 전달">전달</button>'
     +   '<button class="btn ghost xs" data-view="'+vk+'">대화 보기</button>'
     + '</div></div>';
 }
@@ -1605,7 +1606,7 @@ function sessionCard(s, emb){
     +   liveBtn(p, s, emb)
     +   killBtn(s, vk, emb)
     +   '<button class="btn xs" data-act="fork" data-provider="'+esc(s.provider)+'" data-cwd="'+esc(p.cwd)+'" data-sid="'+esc(s.id)+'" data-title="'+esc(s.title||'')+'">포크</button>'
-    +   '<button class="btn ghost xs" data-bridge="'+vk+'">다른 AI에게 전달</button>'
+    +   '<button class="btn ghost xs" data-bridge="'+vk+'">다른 세션에 전달</button>'
     +   '<button class="btn ghost xs" data-view="'+vk+'">대화 보기</button>'
     +   '<div class="grow"></div>'
     +   '<button class="btn ghost xs" data-open="folder" data-cwd="'+esc(p.cwd)+'">📁</button>'
@@ -1910,9 +1911,8 @@ function openBridge(token){
   const source = findSession(parts[0], parts[1], parts[2]);
   if (!source){ toast('발신 세션을 찾지 못했습니다', true); return; }
   bridgeSource = source;
-  const wanted = source.provider === 'codex' ? 'claude' : 'codex';
   const emb = embeddedBySession();
-  const candidates = allSessions().filter(s => s.provider === wanted)
+  const candidates = allSessions().filter(s => !(s.provider === source.provider && s.id === source.id))
     .sort((a,b) => ((b.project.key === source.project.key ? 1 : 0)
                   - (a.project.key === source.project.key ? 1 : 0)) || b.mtime - a.mtime);
   const groups = {same:[], other:[]};
@@ -1931,7 +1931,7 @@ function openBridge(token){
     // "프로젝트 · (제목 없음)" 만으로는 어느 것인지 가릴 수가 없다(실측 7개가 동률).
     // 터미널의 ID 복사 버튼이 주는 값과 앞자리가 같아 눈으로 맞출 수 있다.
     const option = '<option value="'+esc(s.provider+'|'+s.id)+'"'+(external?' disabled':'')+'>'
-      +esc(s.project.name+' · '+(s.title||'(제목 없음)')
+      +esc((s.provider === 'codex' ? 'Codex' : 'Claude')+' · '+s.project.name+' · '+(s.title||'(제목 없음)')
            +' · '+String(s.id).slice(0, 8)+' ['+state+']')+'</option>';
     groups[s.project.key === source.project.key ? 'same' : 'other'].push(option);
   }
@@ -2086,7 +2086,7 @@ document.addEventListener('click', async function(e){
   const t = e.target.closest('[data-tab],[data-mode],[data-expand],[data-pin],[data-fav],[data-open],'
     + '[data-act],[data-focus],[data-view],[data-goterm],[data-closeterm],[data-lay],[data-ori],[data-solo],'
     + '[data-reloadterm],[data-restartterm],[data-resetsize],[data-movepane],'
-    + '[data-termfav],[data-termctx],[data-termhandoff],[data-termcopyid],'
+    + '[data-termfav],[data-termctx],[data-termhandoff],[data-termcopyid],[data-termautoyes],'
     + '[data-fold],[data-listview],[data-sort],[data-pick],'
     + '[data-hide],[data-hideproj],[data-delsess],[data-killsess],[data-showhidden],[data-unhideall],'
     + '[data-mdpick],[data-mdreload],'
@@ -2305,6 +2305,20 @@ document.addEventListener('click', async function(e){
     }catch(err){ toast(err.message, true); }
     return;
   }
+  if (t.dataset.termautoyes){
+    e.stopPropagation();
+    const id = t.dataset.termautoyes, on = !t.classList.contains('on');
+    try{
+      const j = await post('/api/term/autoyes', {id:id, on:on});
+      CC.term.patch(id, {autoYes:j.term.autoYes, autoYesCount:j.term.autoYesCount});
+      toast(on ? '자동 Yes 켜짐 - 권한 승인 메뉴가 뜨면 1번(Yes)을 대신 누릅니다'
+               : '자동 Yes 꺼짐');
+    }catch(err){
+      toast(/HTTP 404|응답 오류/.test(err.message)
+        ? '자동 Yes 에는 대시보드 서버 재시작이 필요합니다' : err.message, true);
+    }
+    return;
+  }
   if (t.dataset.termcopyid){
     e.stopPropagation();
     CC.term.copyId(t.dataset.termcopyid);
@@ -2499,6 +2513,25 @@ document.addEventListener('keydown', function(e){
 // ↻ : 보고 있는 탭에 맞는 것을 다시 읽는다
 // 구성 편집의 select 변경
 document.addEventListener('change', async function(e){
+  if (e.target.dataset.termpermission) {
+    const select = e.target, id = select.dataset.termpermission;
+    const inf = TERMS.find(x => x.id === id);
+    const previous = inf && inf.permissionMode || 'inherit';
+    const mode = select.value;
+    if (mode === previous) return;
+    const warning = mode === 'full'
+      ? '묻지 않기: 파일 수정·삭제와 명령 실행의 권한 확인을 생략합니다. Codex는 샌드박스 제한도 해제합니다. 신뢰할 수 있는 격리 환경에서만 사용하세요.\n조직 정책·외부 앱 인증·일부 필수 확인은 남을 수 있습니다.'
+      : mode === 'auto' ? '자동 심사: AI가 권한 요청을 검토합니다. 위험한 작업이나 심사 실패 시 확인·차단이 남을 수 있습니다.'
+      : 'CLI의 기존 설정으로 돌아갑니다. Codex는 대시보드의 기존 자동 심사 설정을 사용합니다.';
+    if (!confirm(warning + '\n\n선택한 세션만 재시작해 적용합니다. 진행 중인 작업은 중단되며 저장된 대화는 이어집니다. 계속할까요?')) {
+      select.value = previous; return;
+    }
+    select.disabled = true;
+    try { await CC.term.restart(id, mode); await loadTerms(); }
+    catch (err) { toast('권한 변경 실패: ' + err.message, true); select.value = previous; }
+    finally { select.disabled = false; }
+    return;
+  }
   // 문서 탭의 프로젝트 고르기
   if (e.target.id === 'md-proj'){
     const dir = e.target.value;

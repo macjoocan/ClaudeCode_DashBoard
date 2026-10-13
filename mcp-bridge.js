@@ -75,15 +75,20 @@ function sameDir(a, b) {
 
 // 발신으로 쓸 세션을 고른다.
 //
-// 브리지는 서로 다른 provider 사이를 잇는다. 같은 폴더에서 돌고 있는 내 쪽 세션을
-// 먼저 고르고, 없으면 살아있는 것, 그것도 없으면 가장 최근에 움직인 것을 쓴다.
-function pickSource(all, targetProvider, cwd) {
-  const want = targetProvider === 'codex' ? 'claude' : 'codex';
-  const mine = all.filter(s => s.provider === want);
-  return mine.find(s => s.live && sameDir(s.cwd, cwd))
-      || mine.find(s => s.live)
-      || mine.slice().sort((a, b) => b.mtime - a.mtime)[0]
-      || null;
+// 대상 provider 로 발신을 추측하지 않는다. 같은 폴더의 유일한 live 세션만 자동 선택.
+// 여러 후보가 있으면 호출자가 from_session_id 를 명시해야 한다.
+function pickSource(all, target, cwd, provider) {
+  const mine = all.filter(s => !(s.provider === target.provider && s.id === target.id)
+    && (!provider || s.provider === provider) && s.live && sameDir(s.cwd, cwd));
+  if (mine.length > 1) throw new Error('발신 세션이 여러 개입니다. from_session_id 를 지정해 주세요.');
+  return mine[0] || null;
+}
+
+function resolveSession(all, id, provider, field) {
+  if (provider && !['claude', 'codex'].includes(provider)) throw new Error(field + ': provider 가 올바르지 않습니다');
+  const matches = all.filter(s => s.id === id && (!provider || s.provider === provider));
+  if (matches.length !== 1) throw new Error(field + ': 세션을 찾지 못했거나 ID가 중복됩니다. session_list 와 provider를 확인해 주세요.');
+  return matches[0];
 }
 
 function listText(all, opts) {
@@ -124,18 +129,19 @@ const TOOLS = [
   {
     name: 'session_send',
     description:
-      '다른 코딩 세션에게 말을 보낸다. Claude Code 에서 Codex 세션으로, 또는 그 반대로 보낼 수 있다. ' +
-      'Claude Code 의 SendMessage 는 Claude 세션만 알기 때문에 Codex 세션 ID 로는 반송된다 - ' +
-      'Codex 로 보낼 때는 이 도구를 쓴다. 상대 기록에서 도착이 확인될 때까지 기다린 뒤 결과를 돌려준다.',
+      '다른 코딩 세션에게 말을 보낸다. Claude→Claude, Codex→Codex, Claude↔Codex 모두 지원하며 자기 자신은 제외한다. ' +
+      '독립된 대시보드 세션 ID로 전달할 때는 팀 내부 SendMessage 대신 이 도구를 쓴다. ' +
+      '상대 기록에서 도착이 확인될 때까지 기다린 뒤 결과를 돌려준다. 승인 대기 중에는 전송하지 않는다.',
     inputSchema: {
       type: 'object',
       properties: {
         session_id: { type: 'string', description: '받는 세션 ID (session_list 로 확인)' },
+        target_provider: { type: 'string', enum: ['claude', 'codex'], description: '받는 쪽 AI. ID가 중복되면 필수' },
+        from_provider: { type: 'string', enum: ['claude', 'codex'], description: '보내는 쪽 AI (발신 후보 제한)' },
         text: { type: 'string', description: '보낼 말' },
         from_session_id: {
           type: 'string',
-          description: '보내는 쪽 세션 ID. 자기 ID 를 알면 넣어 준다. 안 넣으면 같은 폴더에서 ' +
-                       '돌고 있는 세션을 골라 쓰는데, 한 폴더에 여러 개면 엉뚱한 것이 발신으로 찍힐 수 있다.',
+          description: '보내는 쪽 세션 ID (권장). 생략하면 대상을 제외한 같은 폴더의 실행 중 세션이 정확히 하나일 때만 자동 선택한다.',
         },
         wait_seconds: { type: 'number', description: '도착 확인을 기다리는 시간 (기본 120, 0 이면 안 기다림)' },
       },
@@ -158,25 +164,20 @@ async function callTool(name, args) {
     if (!text) throw new Error('보낼 말이 비어 있습니다.');
 
     const all = await sessions();
-    const target = all.find(s => s.id === targetId);
-    if (!target) throw new Error('그런 세션이 없습니다: ' + targetId + NL + 'session_list 로 확인해 주세요.');
+    const target = resolveSession(all, targetId, args.target_provider, 'session_id');
 
     const fromId = String(args.from_session_id || '').trim();
     let source = null;
     if (fromId) {
-      source = all.find(s => s.id === fromId) || null;
-      if (!source) throw new Error('from_session_id 세션이 없습니다: ' + fromId);
-      if (source.provider === target.provider) {
-        // 브리지는 서로 다른 provider 사이를 잇는다. 같은 쪽끼리는 각자의 기능을 쓴다.
-        throw new Error('같은 provider 끼리는 이 도구로 보내지 않습니다 (둘 다 ' + source.provider + ').' + NL
-          + 'Claude Code 끼리라면 SendMessage 를 쓰세요.');
-      }
+      source = resolveSession(all, fromId, args.from_provider, 'from_session_id');
     } else {
-      source = pickSource(all, target.provider, process.cwd());
+      if (args.from_provider && !['claude', 'codex'].includes(args.from_provider)) throw new Error('from_provider 가 올바르지 않습니다');
+      source = pickSource(all, target, process.cwd(), args.from_provider);
     }
     if (!source) {
-      throw new Error('발신으로 쓸 ' + (target.provider === 'codex' ? 'Claude Code' : 'Codex') + ' 세션이 없습니다.');
+      throw new Error('발신을 자동으로 확인할 수 없습니다. from_session_id 를 지정해 주세요.');
     }
+    if (source.provider === target.provider && source.id === target.id) throw new Error('자기 자신에게는 전달할 수 없습니다');
 
     const sent = await api('/api/bridge/send', {
       sourceProvider: source.provider, sourceId: source.id,
@@ -239,7 +240,7 @@ function serve() {
           // 클라이언트가 말한 버전에 맞춘다. 모르면 우리가 아는 것으로 답한다.
           protocolVersion: (m.params && m.params.protocolVersion) || '2025-06-18',
           capabilities: { tools: {} },
-          serverInfo: { name: 'cc-launcher-bridge', version: '1.0.0' },
+          serverInfo: { name: 'cc-launcher-bridge', version: '1.1.0' },
         });
       }
       if (m.method === 'tools/list') return reply(m.id, { tools: TOOLS });
@@ -263,4 +264,4 @@ function serve() {
 
 if (require.main === module) serve();
 
-module.exports = { pickSource, sameDir, listText, TOOLS, callTool, serve };
+module.exports = { pickSource, resolveSession, sameDir, listText, TOOLS, callTool, serve };

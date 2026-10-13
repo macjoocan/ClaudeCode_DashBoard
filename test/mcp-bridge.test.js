@@ -9,7 +9,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
-const { pickSource, sameDir, listText, TOOLS } = require('../mcp-bridge');
+const { pickSource, resolveSession, sameDir, listText, TOOLS } = require('../mcp-bridge');
 
 const S = (id, provider, extra) => Object.assign(
   { id, provider, live: false, cwd: 'C:\\a', project: 'a', title: '', mtime: 0 }, extra);
@@ -20,10 +20,12 @@ test('경로 비교는 구분자와 대소문자를 가리지 않는다', () => 
   assert.ok(!sameDir('C:\\a', 'C:\\b'));
 });
 
-test('Codex 로 보낼 때 발신은 Claude 쪽에서 고른다', () => {
+test('대상을 제외한 유일한 같은 폴더 live 세션을 고른다', () => {
   const all = [S('cx', 'codex', { live: true }), S('cl', 'claude', { live: true })];
-  assert.equal(pickSource(all, 'codex', 'C:\\a').id, 'cl');
-  assert.equal(pickSource(all, 'claude', 'C:\\a').id, 'cx');
+  assert.equal(pickSource(all, all[0], 'C:\\a').id, 'cl');
+  assert.equal(pickSource(all, all[1], 'C:\\a').id, 'cx');
+  all[1].provider = 'codex';
+  assert.equal(pickSource(all, all[0], 'C:\\a').id, 'cl');
 });
 
 test('같은 폴더에서 돌고 있는 세션을 먼저 고른다', () => {
@@ -31,17 +33,25 @@ test('같은 폴더에서 돌고 있는 세션을 먼저 고른다', () => {
     S('other', 'claude', { live: true, cwd: 'C:\\b' }),
     S('here', 'claude', { live: true, cwd: 'C:\\a' }),
   ];
-  assert.equal(pickSource(all, 'codex', 'C:\\a').id, 'here');
+  assert.equal(pickSource(all, S('target', 'codex'), 'C:\\a').id, 'here');
 });
 
-test('살아있는 것이 없으면 가장 최근에 움직인 것을 쓴다', () => {
+test('종료된 세션을 발신으로 추측하지 않는다', () => {
   const all = [S('old', 'claude', { mtime: 1 }), S('new', 'claude', { mtime: 9 })];
-  assert.equal(pickSource(all, 'codex', 'C:\\zzz').id, 'new');
+  assert.equal(pickSource(all, S('target', 'codex'), 'C:\\zzz'), null);
 });
 
 test('보낼 상대가 아예 없으면 null', () => {
-  // Codex 로 보내려면 Claude 쪽 발신이 있어야 한다. Codex 만 있으면 고를 것이 없다.
-  assert.equal(pickSource([S('cx', 'codex')], 'codex', 'C:\\a'), null);
+  assert.equal(pickSource([S('cx', 'codex')], S('cx', 'codex'), 'C:\\a'), null);
+});
+
+test('발신이 모호하면 ID 지정을 요청하고 provider 필터를 지원한다', () => {
+  const all = [S('a', 'claude', { live: true }), S('b', 'codex', { live: true })];
+  assert.throws(() => pickSource(all, S('target', 'codex'), 'C:\\a'), /from_session_id/);
+  assert.equal(pickSource(all, S('target', 'codex'), 'C:\\a', 'codex').id, 'b');
+  const duplicate = [S('same', 'claude'), S('same', 'codex')];
+  assert.throws(() => resolveSession(duplicate, 'same', null, 'session_id'), /중복/);
+  assert.equal(resolveSession(duplicate, 'same', 'codex', 'session_id').provider, 'codex');
 });
 
 test('목록은 provider 로 나누고 실행 중을 표시한다', () => {
@@ -72,10 +82,11 @@ test('도구 설명에 Codex 로 보낼 때 쓰라는 말이 있다', () => {
 });
 
 // MCP 클라이언트가 실제로 말을 거는 방식 그대로 굴려 본다.
-function rpc(lines) {
+function rpc(lines, port) {
   return new Promise((resolve, reject) => {
     const p = spawn(process.execPath, [path.join(__dirname, '..', 'mcp-bridge.js')],
-      { stdio: ['pipe', 'pipe', 'pipe'] });
+      { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env,
+        ...(port ? { CC_LAUNCHER_PORT: String(port) } : {}) } });
     let out = '';
     p.stdout.setEncoding('utf8');
     p.stdout.on('data', d => { out += d; });
@@ -114,4 +125,34 @@ test('도구가 실패해도 프로토콜 오류로 내지 않는다', async () 
   assert.ok(!res.error, '프로토콜 오류로 내면 안 된다');
   assert.equal(res.result.isError, true);
   assert.match(res.result.content[0].text, /session_id/);
+});
+
+test('실제 MCP stdio→HTTP 요청은 네 방향을 지원하고 self-send는 전송 전에 거부한다', async t => {
+  const http = require('node:http');
+  const sent = [];
+  const server = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/api/projects') return res.end(JSON.stringify({ projects: [{
+      cwd: process.cwd(), name: 'test', sessions: [S('c1', 'claude'), S('c2', 'claude'), S('x1', 'codex'), S('x2', 'codex')]
+    }] }));
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      sent.push(JSON.parse(body));
+      res.end(JSON.stringify({ ok: true, message: { id: 'test-message', status: 'queued' } }));
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const pairs = [['c1', 'c2'], ['x1', 'x2'], ['c1', 'x1'], ['x1', 'c1'], ['c1', 'c1']];
+  const replies = await rpc(pairs.map(([from, to], i) => ({ jsonrpc: '2.0', id: i + 1,
+    method: 'tools/call', params: { name: 'session_send', arguments: {
+      from_session_id: from, session_id: to, text: '테스트', wait_seconds: 0
+    } } })), server.address().port);
+  assert.equal(sent.length, 4);
+  for (const [from, to] of pairs.slice(0, 4)) {
+    assert.ok(sent.some(s => s.sourceId === from && s.targetId === to));
+  }
+  assert.equal(replies.filter(r => !r.result.isError).length, 4);
+  assert.match(replies.find(r => r.id === 5).result.content[0].text, /자기 자신/);
 });

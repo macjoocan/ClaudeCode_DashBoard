@@ -8,6 +8,8 @@ const pty = require('node-pty');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { normalizeMode, permissionArgs } = require('./permission-mode');
+const autoYes = require('./auto-yes');
 
 const SCROLLBACK = 512 * 1024;   // 재접속 시 되살릴 출력량
 const KEEP_DEAD_MS = 10 * 60 * 1000; // 종료된 터미널을 목록에 남겨두는 시간
@@ -65,7 +67,8 @@ function claudeArgs(action, sessionId) {
   return [];   // 'new'
 }
 
-function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model, provider, codexBin }) {
+function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model, provider, codexBin, permissionMode }) {
+  permissionMode = normalizeMode(permissionMode);
   if (!cwd || !fs.existsSync(cwd)) throw new Error(`폴더가 없습니다: ${cwd}`);
 
   const isCodex = provider === 'codex';
@@ -76,6 +79,7 @@ function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model, p
     ? require('./codex.js').codexArgs(action, sessionId)
     : claudeArgs(action, sessionId);
   if (model && !isCodex) args.push('--model', model);
+  args.push(...permissionArgs(provider, permissionMode));
 
   const p = pty.spawn(bin, args, {
     name: 'xterm-256color',
@@ -89,7 +93,7 @@ function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model, p
   const id = 't' + (++seq) + '-' + Date.now().toString(36);
   const t = {
     id, action, cwd, sessionId: sessionId || null,
-    provider: isCodex ? 'codex' : 'claude',
+    provider: isCodex ? 'codex' : 'claude', permissionMode,
     title: title || path.basename(cwd),
     pid: p.pid,
     startedAt: Date.now(),
@@ -196,6 +200,7 @@ function wire(t, p) {
     if (t.buf.length > SCROLLBACK) t.buf = t.buf.slice(-SCROLLBACK);
     t.lastAt = Date.now();
     if (changesScreen(t, d)) t.lastRealAt = t.lastAt;
+    autoYes.onOutput(t, d, s => { if (t.proc === p) p.write(s); });
 
     // 덩어리마다 WS 메시지를 하나씩 보내지 않는다.
     //
@@ -237,14 +242,21 @@ function wire(t, p) {
 // 터미널 id 를 그대로 쓰기 때문에 패인 위치·크기·탭 순서가 유지된다.
 // 세션 ID 를 확보한 상태면 `--resume` 으로 대화를 이어서 켠다. 세션 기록은 파일에
 // 계속 쌓이고 있으므로 재시작해도 대화가 남는다. 다만 **응답 중이던 내용은 사라진다.**
-function restart(id, { claudeBin, codexBin }, freshStart) {
+function restart(id, { claudeBin, codexBin, permissionMode }, freshStart) {
   const t = terms.get(id);
   if (!t) return Promise.resolve(null);
+  if (t.restarting) return Promise.reject(new Error('이미 재시작 중입니다'));
+  const mode = normalizeMode(permissionMode === undefined ? t.permissionMode : permissionMode);
+  if (permissionMode !== undefined) {
+    info(t); // Refresh the session ID before replacing a live process.
+    if (!t.sessionId) return Promise.reject(new Error('세션 ID 확인 후 권한을 변경해 주세요. 첫 대화를 시작한 뒤 다시 시도하세요'));
+  }
 
   const isCodex = t.provider === 'codex';
   const bin = isCodex ? codexBin : claudeBin;
   if (!bin) return Promise.reject(new Error(isCodex ? 'codex 를 찾을 수 없습니다' : 'claude 를 찾을 수 없습니다'));
 
+  t.restarting = true;
   const dying = t.proc;
   const wait = new Promise(resolve => {
     if (t.exitCode != null) return resolve();
@@ -263,6 +275,7 @@ function restart(id, { claudeBin, codexBin }, freshStart) {
     const args = isCodex
       ? require('./codex.js').codexArgs(action, sid)
       : claudeArgs(action, sid);
+    args.push(...permissionArgs(t.provider, mode));
     const p = pty.spawn(bin, args, {
       name: 'xterm-256color',
       cols: t.cols, rows: t.rows,
@@ -272,6 +285,8 @@ function restart(id, { claudeBin, codexBin }, freshStart) {
     });
 
     t.proc = p;
+    t.permissionMode = mode;
+    t.ayFresh = '';
     t.pid = p.pid;
     t.action = action;
     t.sessionId = sid;
@@ -288,7 +303,7 @@ function restart(id, { claudeBin, codexBin }, freshStart) {
     send(t, { t: 'reset' });          // 붙어 있는 화면을 비우게 한다
     send(t, { t: 'm', info: info(t) });
     return t;
-  });
+  }).finally(() => { t.restarting = false; });
 }
 
 // 기존 패인과 provider는 유지하고 저장된 대화는 이어받지 않는 새 CLI를 띄운다.
@@ -407,6 +422,8 @@ function info(t) {
   return {
     id: t.id, title: t.title, cwd: t.cwd, action: t.action,
     provider: t.provider || 'claude',
+    permissionMode: t.permissionMode || 'inherit',
+    autoYes: !!t.autoYes, autoYesCount: t.ayCount || 0,
     sessionId: t.sessionId, pid: t.pid,
     cols: t.cols, rows: t.rows,
     startedAt: t.startedAt, lastAt: t.lastAt, lastRealAt: t.lastRealAt || t.lastAt,
@@ -434,6 +451,16 @@ function reap() {
 }
 
 function get(id) { return terms.get(id) || null; }
+
+// 자동 Yes 켜기/끄기. 켤 때 화면을 다시 그리게 한다 - 이미 떠 있는 승인 메뉴는
+// "켠 뒤 새로 나온 출력" 에 없으므로, 다시 그려야 바로 눌린다.
+function setAutoYes(id, on) {
+  const t = terms.get(id);
+  if (!t || t.exitCode != null) return null;
+  autoYes.setAutoYes(t, on);
+  if (on) repaint(id);
+  return t;
+}
 
 function write(id, data) {
   const t = terms.get(id);
@@ -546,7 +573,7 @@ function killAll() {
   for (const t of terms.values()) { if (t.exitCode == null) { try { t.proc.kill(); } catch {} } }
 }
 
-module.exports = { create, restart, fresh, list, get, info, write, resize, repaint, repaintsInPlace,
+module.exports = { create, restart, fresh, list, get, info, write, resize, repaint, repaintsInPlace, setAutoYes,
   kill, close, attach, killAll,
   // 아래 둘은 테스트용 - paintOf/sameDir 는 순수 함수, _terms 는 등록된 터미널 맵이다.
   paintOf, sameDir, _terms: terms };
