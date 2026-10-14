@@ -36,7 +36,8 @@ const { wtArgs } = require('./launch-args');
 const { taskkillOutcome } = require('./kill-result');
 const { pendingPrompt } = require('./tui-state');
 const { readClipboardFiles } = require('./clipboard-files');
-const { requestedMode } = require('./permission-mode');
+const { requestedMode, createStore } = require('./permission-mode');
+const permStore = createStore(path.join(__dirname, 'permissions.json'));
 const scribe = require('./scribe');
 const documents = require('./documents');
 const { resolveMarkdownPath } = require('./md-resolve');
@@ -497,6 +498,8 @@ function findScannedSession(provider, id, projects) {
 function termsWithFavorites() {
   const projects = scan();
   return terminals.list().map(t => {
+    // 세션 ID 는 첫 대화 뒤에, 초기화 뒤에는 새 ID 로 잡힌다. 잡히는 대로 권한을 기억해 둔다.
+    if (t.alive) permStore.remember(t.provider, t.sessionId, t.permissionMode);
     if (!t.sessionId) return Object.assign({}, t, { fav: false, slug: null });
     const found = findScannedSession(t.provider, t.sessionId, projects);
     return Object.assign({}, t, {
@@ -1560,7 +1563,9 @@ const server = http.createServer(async (req, res) => {
         claudeBin: CLAUDE_BIN,
         provider: b.provider === 'codex' ? 'codex' : 'claude',
         codexBin: CODEX_BIN,
-        permissionMode: requestedMode(b),
+        // 따로 고르지 않고 기존 세션을 다시 열면, 그 세션에 줬던 권한을 그대로 건다.
+        permissionMode: b.permissionMode === undefined && b.action === 'resume'
+          ? permStore.get(b.provider, b.sessionId) : requestedMode(b),
       });
       return json(res, 200, { ok: true, term: terminals.info(t) });
     }
@@ -1571,7 +1576,9 @@ const server = http.createServer(async (req, res) => {
         { claudeBin: CLAUDE_BIN, codexBin: CODEX_BIN,
           permissionMode: b.permissionMode === undefined ? undefined : requestedMode(b) });
       if (!t) throw new Error('터미널이 없습니다');
-      return json(res, 200, { ok: true, term: terminals.info(t) });
+      const inf = terminals.info(t);
+      if (b.permissionMode !== undefined) permStore.remember(inf.provider, inf.sessionId, inf.permissionMode);
+      return json(res, 200, { ok: true, term: inf });
     }
 
     if (url.pathname === '/api/term/kill' && req.method === 'POST') {

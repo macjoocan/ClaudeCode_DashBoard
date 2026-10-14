@@ -112,3 +112,21 @@ test('old servers cannot silently ignore a permission change or restart the sess
   await assert.rejects(context.restart('t1', 'full'), /서버 재시작/);
   assert.deepEqual(calls, []);
 });
+
+test('per-session permission store survives reopen and forgets inherit', () => {
+  const os = require('node:os');
+  const { createStore } = require('../permission-mode');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'perm-')), 'permissions.json');
+  const a = createStore(file);
+  a.remember('codex', 's1', 'full');
+  a.remember('claude', 's1', 'auto');
+  a.remember('claude', null, 'full');
+  const b = createStore(file);               // 대시보드를 다시 켠 경우
+  assert.equal(b.get('codex', 's1'), 'full');
+  assert.equal(b.get('claude', 's1'), 'auto');
+  assert.equal(b.get('codex', 'nope'), undefined);
+  b.remember('codex', 's1', 'inherit');
+  assert.equal(createStore(file).get('codex', 's1'), undefined);
+  fs.writeFileSync(file, '{"codex:x":"--yolo"}');
+  assert.equal(createStore(file).get('codex', 'x'), undefined);   // 이상한 값은 무시
+});
