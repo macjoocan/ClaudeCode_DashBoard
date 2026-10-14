@@ -812,25 +812,14 @@ function reapPasteDir() {
 //
 // 스크립트는 ASCII 로만 쓴다. PS 5.1 은 BOM 없는 입력을 ANSI 로 읽어 한글이 깨진다.
 // 한국어 안내는 서버 쪽 메시지로 처리한다.
+// 폴더 고르기 창. pick-folder.ps1 이 탐색기식 창(주소창·빠른 실행)을 마우스가 있는
+// 모니터에 띄운다. 예전 트리식 FolderBrowserDialog 는 불편했고 주 모니터에만 떴다.
+const PICK_PS1 = path.join(__dirname, 'pick-folder.ps1');
 function pickFolder(start) {
-  const safeStart = start && fs.existsSync(start) ? String(start).replace(/'/g, "''") : '';
-  const ps = [
-    'Add-Type -AssemblyName System.Windows.Forms;',
-    '$d = New-Object System.Windows.Forms.FolderBrowserDialog;',
-    '$d.Description = "Pick a project folder to run Claude Code in";',
-    '$d.ShowNewFolderButton = $true;',
-    safeStart ? `$d.SelectedPath = '${safeStart}';` : '',
-    // 대화상자가 브라우저 뒤로 숨지 않게 맨 앞 폼을 소유자로 준다
-    '$top = New-Object System.Windows.Forms.Form;',
-    '$top.TopMost = $true; $top.ShowInTaskbar = $false;',
-    '$top.Size = New-Object System.Drawing.Size(1,1);',
-    '$r = $d.ShowDialog($top);',
-    '$top.Dispose();',
-    'if ($r -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.SelectedPath) }',
-  ].filter(Boolean).join(' ');
-
+  const safeStart = start && fs.existsSync(start) ? String(start) : '';
   return new Promise(resolve => {
-    execFile('powershell.exe', ['-NoProfile', '-STA', '-Command', ps],
+    execFile('powershell.exe',
+      ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', PICK_PS1, '-Start', safeStart],
       { timeout: 180000, windowsHide: true, encoding: 'utf8' },
       (err, stdout) => {
         const p = String(stdout || '').trim();
