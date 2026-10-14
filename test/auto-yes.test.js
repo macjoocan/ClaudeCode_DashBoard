@@ -78,3 +78,32 @@ test('resume replay is ignored and a runaway loop switches itself off', ctx => {
   assert.equal(h.writes.length, MAX_PER_MIN);
   assert.equal(h.t.autoYes, false);
 });
+
+test('banners and words outside the menu do not block it (was the "sometimes" miss)', () => {
+  assert.equal(approvalPrompt(lines('✨ Update available! Run: claude update', CLAUDE)), true);
+  assert.equal(approvalPrompt(lines(' Bash command', '   cat docs/superpowers/plans/x.md', CLAUDE)), true);
+  assert.equal(approvalPrompt(lines('Do you trust the contents of this directory?', 'ok', CLAUDE)), true);
+  // 플랜 승인 메뉴 자체는 여전히 건드리지 않는다
+  assert.equal(approvalPrompt(lines('Do you want to proceed?', '❯ 1. Yes, and auto-accept edits', '  2. Yes, and manually approve edits', '  3. No, keep planning')), false);
+});
+
+test('a menu that appears right after a press is answered once the cooldown ends', ctx => {
+  ctx.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const h = harness({});
+  setAutoYes(h.t, true);
+  h.feed(CLAUDE);
+  ctx.mock.timers.tick(400);
+  assert.equal(h.writes.length, 1);
+  h.feed(CLAUDE);                                     // 바로 다음 메뉴, 그 뒤 출력 없음
+  for (let i = 0; i < 30; i++) ctx.mock.timers.tick(100);
+  assert.equal(h.writes.length, 2);
+});
+
+test('output that never pauses still gets checked', ctx => {
+  ctx.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const h = harness({});
+  setAutoYes(h.t, true);
+  h.feed(CLAUDE);
+  for (let i = 0; i < 20; i++) { ctx.mock.timers.tick(100); h.feed(' '); }   // 100ms 마다 한 글자
+  assert.equal(h.writes.length, 1);
+});

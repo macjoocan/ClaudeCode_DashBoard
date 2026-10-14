@@ -34,18 +34,26 @@ function screenTail(raw) {
 // Codex: "Would you like to run the following command?" / "... make the following edits?"
 const QUESTION = /Do you want to (proceed|make|create|allow|run|use|delete|overwrite)\b|Would you like to (run|make|apply)\b/i;
 
-// 이 말이 같이 보이면 권한 승인이 아니다. 사용자가 정할 일이라 건드리지 않는다.
-const NOT_APPROVAL = /trust (the|this)|Update (available|now)|\bplan\b/i;
+// 메뉴 안에 이 말이 있으면 권한 승인이 아니다(폴더 신뢰·업데이트·플랜 승인).
+// **질문 줄부터 아래만** 본다. 예전엔 화면 끝 전체에서 찾아서, 하단의 "Update available"
+// 알림이나 명령 경로의 plans/ 같은 낱말 하나에 모든 승인이 막혔다 - "가끔 안 된다" 의 원인.
+const NOT_APPROVAL = /trust (the|this) (folder|directory|files|contents)|Update (available|now)|keep planning|auto-accept edits|manually approve edits/i;
 
 // 선택 커서가 마지막으로 그려진 줄. 사용자가 화살표로 No 로 옮겼으면 거기가 마지막이다.
 const CURSOR = /[❯›>]\s*([1-9])[.)]\s*(\S+)/g;
 
 // 이 출력 조각에 "지금 1번 Yes 에 커서가 있는 승인 메뉴" 가 있나.
 function approvalPrompt(raw) {
-  const tail = screenTail(raw);
-  if (!QUESTION.test(tail) || NOT_APPROVAL.test(tail)) return false;
+  const screen = screenTail(raw);
+  // 마지막 질문부터 끝까지가 지금 떠 있는 메뉴다.
+  const q = new RegExp(QUESTION.source, 'gi');
+  let at = -1, m;
+  while ((m = q.exec(screen))) at = m.index;
+  if (at < 0) return false;
+  const tail = screen.slice(at);
+  if (NOT_APPROVAL.test(tail)) return false;
   if (!/\b2[.)]\s*\S/.test(tail)) return false;            // 선택지가 둘 이상이어야 메뉴다
-  let last = null, m;
+  let last = null;
   CURSOR.lastIndex = 0;
   while ((m = CURSOR.exec(tail))) last = m;
   return !!last && last[1] === '1' && /^Yes\b/i.test(last[2]);
@@ -63,12 +71,26 @@ function onOutput(t, d, write) {
   // 이어하기 재생은 지난 대화다. 그 안의 옛 메뉴에 답하면 안 된다.
   if (t.hold) { t.ayFresh = ''; return; }
   t.ayFresh = ((t.ayFresh || '') + d).slice(-FRESH_MAX);
-  if (t.ayTimer) clearTimeout(t.ayTimer);
+  schedule(t, write, SETTLE_MS);
+}
+
+// 출력이 잠깐이라도 끊기면 본다. 다만 출력이 쉬지 않고 이어져도 MAX_WAIT_MS 안에는
+// 한 번 본다 - 메뉴가 떠 있는 동안 다른 줄이 계속 갱신되면 영영 안 보던 문제.
+const MAX_WAIT_MS = 1200;
+function schedule(t, write, ms) {
+  const now = Date.now();
+  if (t.ayTimer) {
+    if (now - t.ayTimerAt >= MAX_WAIT_MS) return;          // 이미 오래 기다렸다 - 그대로 둔다
+    clearTimeout(t.ayTimer);
+  } else t.ayTimerAt = now;
   t.ayTimer = setTimeout(() => {
     t.ayTimer = null;
     if (!t.autoYes || t.hold || t.exitCode != null) return;
     const now = Date.now();
-    if (now - (t.ayLastAt || 0) < COOLDOWN_MS) return;
+    // 쿨다운 중이면 버리지 말고 끝난 뒤 다시 본다. 버리면, 누른 직후 바로 뜬 다음 메뉴는
+    // 그 뒤로 출력이 없어서 다시는 안 본다.
+    const left = t.ayLastAt == null ? 0 : COOLDOWN_MS - (now - t.ayLastAt);
+    if (left > 0) return schedule(t, write, left + 50);
     if (!approvalPrompt(t.ayFresh)) return;
     t.ayLog = (t.ayLog || []).filter(at => now - at < 60000);
     if (t.ayLog.length >= MAX_PER_MIN) { t.autoYes = false; return; }
@@ -77,7 +99,7 @@ function onOutput(t, d, write) {
     t.ayFresh = '';
     t.ayCount = (t.ayCount || 0) + 1;
     write(String.fromCharCode(13));
-  }, SETTLE_MS);
+  }, ms);
   if (t.ayTimer.unref) t.ayTimer.unref();
 }
 
