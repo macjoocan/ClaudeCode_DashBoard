@@ -234,6 +234,12 @@ function wire(t, p) {
     t.exitCode = exitCode == null ? 0 : exitCode;
     t.exitedAt = Date.now();
     send(t, { t: 'x', code: t.exitCode });
+    // Codex 는 강제 종료되면 SessionEnd 훅이 안 불려 상태 파일이 남고, 대시보드는 그걸
+    // 하루 동안 '실행 중' 으로 보여줬다(패인을 닫아도 남던 원인). 훅이 적는 pid 는 훅을
+    // 띄운 셸이라 생존 확인에도 못 쓴다. 우리가 띄운 프로세스가 끝났으니 여기서 지운다.
+    if (t.provider === 'codex' && t.sessionId) {
+      try { require('./codex.js').dropLive(t.sessionId); } catch {}
+    }
   });
 }
 
