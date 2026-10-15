@@ -1293,6 +1293,12 @@
     dropPending(v); endReplay(v);   // 옛 소켓의 대기 출력이 새 복원 위에 쏟아지지 않게
     var ws = new WebSocket('ws://' + location.host + '/term?id=' + encodeURIComponent(v.info.id));
     v.ws = ws;
+    // 붙자마자 지금 크기를 알린다. 패인은 소켓이 열리기 전에 fit 되는 일이 많고, 그때 나간
+    // 리사이즈는 sendMsg 가 버린다. 그러면 CLI 는 open() 의 어림 크기(실측 104x33)로, 화면은
+    // 실제 크기(101x34)로 그려서 처음 열 때 줄이 어긋났다 - 패인 크기를 만지면 고쳐지던 것.
+    ws.onopen = function () {
+      if (v.ws === ws) sendMsg(v, { t: 'r', c: v.term.cols, r: v.term.rows });
+    };
     ws.onmessage = function (ev) {
       if (v.ws !== ws) return;
       var m;
