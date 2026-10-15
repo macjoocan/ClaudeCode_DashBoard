@@ -34,7 +34,8 @@ function fixture(clipboard) {
   const body = { addEventListener(name, fn, options) { listeners[name] = { fn, options }; } };
   const ctx = { document, navigator: { clipboard }, Promise,
     CC: { toast: (...args) => notices.push(args) }, views: new Map(),
-    wireFiles() {}, nudge() {}, onChange: null, setTimeout() { return 0; }, clearTimeout() {} };
+    wireFiles() {}, nudge() {}, onChange: null, setTimeout() { return 0; }, clearTimeout() {},
+    sent: [], sendMsg(v, m) { ctx.sent.push(m.d); } };
   vm.createContext(ctx);
   vm.runInContext(source.slice(source.indexOf('  function note('), source.indexOf('  // ------------------------------------------------------ 이미지')), ctx);
   const v = { term, body, info: { id: 'test' } };
@@ -202,4 +203,33 @@ test('right-click is captured before xterm repositions and selects its hidden te
   assert.equal(e.prevented, true);
   assert.equal(e.stopped, true);
   assert.equal(f.listeners.contextmenu.options, true);
+});
+
+test('common text-box shortcuts are translated to keys the CLIs understand', () => {
+  const press = (provider, name, extras) => {
+    const f = fixture();
+    f.v.info.provider = provider;
+    const e = key(name, extras);
+    const passed = f.term.key(e);
+    return { sent: f.ctx.sent.slice(), passed, prevented: e.prevented };
+  };
+  const ESC = String.fromCharCode(27);
+  // Shift+Enter 는 전송이 아니라 줄바꿈(ESC CR) - 두 CLI 모두
+  for (const p of ['claude', 'codex']) {
+    const r = press(p, 'Enter', { ctrlKey: false, shiftKey: true });
+    assert.deepEqual(r.sent, [ESC + '\r']);
+    assert.equal(r.passed, false);
+    assert.equal(r.prevented, true);
+  }
+  assert.deepEqual(press('claude', 'Delete').sent, [ESC + 'd']);        // 뒤 단어 지우기
+  assert.deepEqual(press('codex', 'Delete').sent, []);                  // Codex 는 원래 된다
+  assert.equal(press('codex', 'Delete').passed, true);
+  assert.deepEqual(press('claude', 'z').sent, [String.fromCharCode(31)]); // 되돌리기 Ctrl+_
+  assert.deepEqual(press('codex', 'z').sent, []);
+  assert.deepEqual(press('claude', 'Home').sent, [ESC + '[H']);
+  assert.deepEqual(press('codex', 'End').sent, [ESC + '[F']);
+  // 그냥 Enter 는 건드리지 않는다
+  const enter = press('claude', 'Enter', { ctrlKey: false });
+  assert.deepEqual(enter.sent, []);
+  assert.equal(enter.passed, true);
 });

@@ -305,6 +305,11 @@ Windows Terminal 이 없는 PC 는 원래부터 `Start-Process powershell` 로 �
 | 더블클릭 / 트리플클릭 | 단어 / 줄 선택 |
 | `Ctrl+A` | 대화 전체 선택 (스크롤백 포함) |
 | `Ctrl+Shift+A` | 입력 중인 프롬프트만 선택 |
+| `Shift+Enter` | 줄바꿈 (전송하지 않음) |
+| `Home` / `End` · `Ctrl+Home` / `Ctrl+End` | 줄 처음 / 끝 |
+| `Ctrl+←` / `Ctrl+→` | 단어 단위 이동 |
+| `Ctrl+Backspace` / `Ctrl+Delete` | 앞 / 뒤 단어 지우기 |
+| `Ctrl+Z` | 되돌리기 (Claude 만) |
 | `Ctrl+C` | 선택이 있으면 **복사**, 없으면 중단(SIGINT) |
 | `Ctrl+Shift+C` · `Ctrl+Insert` | 항상 복사 |
 | `Ctrl+V` · `Ctrl+Shift+V` · `Shift+Insert` | 붙여넣기 |

@@ -800,6 +800,27 @@
     }, 250);
   }
 
+  // 일반 입력창처럼 쓰는 단축키를 CLI 가 알아듣는 키로 바꿔 보낸다.
+  //
+  // 실측(2026-10-15, Claude Code 2.1 / Codex 0.162): Home/End, Ctrl+←/→, Ctrl+Backspace,
+  // Delete 는 둘 다 그대로 된다. 안 되던 것만 여기서 바꾼다.
+  //   Shift+Enter   xterm.js 는 Enter 와 똑같이 CR 을 보내 **바로 전송돼 버렸다**.
+  //                 두 CLI 모두 Alt+Enter(ESC CR)를 줄바꿈으로 받는다.
+  //   Ctrl+Delete   Claude 는 한 글자만 지운다. 뒤 단어 지우기는 Alt+D 로 받는다(Codex 는 원래 된다).
+  //   Ctrl+Z        Windows 에선 아무 일도 안 한다. Claude 의 되돌리기는 Ctrl+_ 다(Codex 는 되돌리기가 없다).
+  //   Ctrl+Home/End 둘 다 모른다. 입력 맨 앞/뒤 대신 줄 앞/뒤(Home/End)로 보낸다.
+  function inputRemap(v, e) {
+    var claude = !v.info || v.info.provider !== 'codex';
+    var k = (e.key || '').toLowerCase();
+    var plainCtrl = e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
+    if (k === 'enter' && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) return '\x1b\r';
+    if (plainCtrl && k === 'delete' && claude) return '\x1bd';
+    if (plainCtrl && k === 'z' && claude) return '\x1f';
+    if (plainCtrl && k === 'home') return '\x1b[H';
+    if (plainCtrl && k === 'end') return '\x1b[F';
+    return null;
+  }
+
   function selectPrompt(v) {
     var term = v.term, buffer = term.buffer && term.buffer.active;
     if (!buffer) return false;
@@ -906,6 +927,9 @@
         else if (!selectPrompt(v)) note('현재 화면에서 입력 프롬프트를 찾지 못했습니다', true);
         return false;
       }
+
+      var remap = inputRemap(v, e);
+      if (remap != null) { e.preventDefault(); sendMsg(v, { t: 'i', d: remap }); return false; }
 
       return true;   // 그 밖의 키는 전부 PTY 로
     });
