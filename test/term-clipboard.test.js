@@ -138,10 +138,10 @@ function screen(f, texts, cursorY, cursorX = 5, wrapped = []) {
   f.term.select = (x, y, length) => { f.term.range = { x, y, length }; };
 }
 
-test('Ctrl+A selects only the current prompt, including text after the cursor', () => {
+test('Ctrl+Shift+A selects only the current prompt, including text after the cursor', () => {
   const f = fixture();
   screen(f, ['old response', '────────', '❯ hello world', '────────', 'status'], 2);
-  const e = key('a');
+  const e = key('a', { shiftKey: true });
   assert.equal(f.term.key(e), false);
   assert.deepEqual(f.term.range, { x: 2, y: 2, length: 11 });
   assert.equal(e.prevented, true);
@@ -150,14 +150,14 @@ test('Ctrl+A selects only the current prompt, including text after the cursor', 
 test('prompt selection includes multiline input but excludes borders and footer', () => {
   const f = fixture();
   screen(f, ['────────', '› first line', '  second line', '  last line', '────────', 'status'], 2);
-  f.term.key(key('a'));
+  f.term.key(key('a', { shiftKey: true }));
   assert.deepEqual(f.term.range, { x: 2, y: 1, length: 89 });
 });
 
 test('boxed prompts retain blank lines inside the input', () => {
   const f = fixture();
   screen(f, ['────────', '❯ first', '', '  last', '────────', 'status'], 1);
-  f.term.key(key('a'));
+  f.term.key(key('a', { shiftKey: true }));
   assert.deepEqual(f.term.range, { x: 2, y: 1, length: 84 });
 });
 
@@ -168,21 +168,21 @@ test('prompt selection measures wide Korean characters in terminal cells', () =>
   line.getCell = x => ({ getChars: () => ({ 0: '❯', 1: ' ', 2: '한', 4: '글' }[x] || ''),
     getWidth: () => x === 2 || x === 4 ? 2 : 1 });
   f.term.buffer.active.getLine = y => y === 1 ? line : { translateToString: () => '────────' };
-  f.term.key(key('a'));
+  f.term.key(key('a', { shiftKey: true }));
   assert.deepEqual(f.term.range, { x: 2, y: 1, length: 4 });
 });
 
-test('Ctrl+A does not select conversation output when there is no identifiable prompt', () => {
+test('Ctrl+Shift+A does not select conversation output when there is no identifiable prompt', () => {
   const f = fixture();
   screen(f, ['old response', 'Choose an option'], 1);
-  f.term.key(key('a'));
+  f.term.key(key('a', { shiftKey: true }));
   assert.equal(f.term.range, undefined);
   assert.notEqual(f.term.selection, 'all terminal output');
 });
 
-test('Ctrl+Shift+A retains whole terminal output selection', () => {
+test('Ctrl+A selects the whole conversation', () => {
   const f = fixture();
-  f.term.key(key('a', { shiftKey: true }));
+  f.term.key(key('a'));
   assert.equal(f.term.selection, 'all terminal output');
 });
 

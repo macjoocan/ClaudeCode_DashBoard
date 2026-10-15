@@ -689,8 +689,8 @@
   //   Ctrl+Shift+C    항상 복사
   //   Ctrl+Shift+V    붙여넣기 (브라우저 기본 paste 이벤트)
   //   Ctrl+Insert     복사        Shift+Insert  붙여넣기   (고전 윈도 방식)
-  //   Ctrl+A                   커서가 있는 프롬프트의 표시 텍스트 선택
-  //   Ctrl+Shift+A             터미널 표시 텍스트 전체 선택
+  //   Ctrl+A                   대화 전체 선택 (스크롤백 포함)
+  //   Ctrl+Shift+A             커서가 있는 입력 프롬프트만 선택
   //   우클릭          선택이 있으면 복사, 없으면 붙여넣기 (cmd 빠른 편집 방식)
   //   가운데 클릭      붙여넣기
   //
@@ -901,7 +901,8 @@
 
       if (ctrl && k === 'a') {
         e.preventDefault();
-        if (e.shiftKey) term.selectAll();
+        // 보통 원하는 건 대화 전체다. 입력 중인 글만 고르는 건 Shift 를 같이 누른다.
+        if (!e.shiftKey) term.selectAll();
         else if (!selectPrompt(v)) note('현재 화면에서 입력 프롬프트를 찾지 못했습니다', true);
         return false;
       }

@@ -303,7 +303,8 @@ Windows Terminal 이 없는 PC 는 원래부터 `Start-Process powershell` 로 �
 | 드래그 | 텍스트 선택 (보통은 이대로 된다) |
 | **Shift + 드래그** | **선택이 안 될 때** — 아래 설명 참고 |
 | 더블클릭 / 트리플클릭 | 단어 / 줄 선택 |
-| `Ctrl+Shift+A` | 전체 선택 |
+| `Ctrl+A` | 대화 전체 선택 (스크롤백 포함) |
+| `Ctrl+Shift+A` | 입력 중인 프롬프트만 선택 |
 | `Ctrl+C` | 선택이 있으면 **복사**, 없으면 중단(SIGINT) |
 | `Ctrl+Shift+C` · `Ctrl+Insert` | 항상 복사 |
 | `Ctrl+V` · `Ctrl+Shift+V` · `Shift+Insert` | 붙여넣기 |

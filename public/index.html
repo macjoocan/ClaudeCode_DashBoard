@@ -1755,8 +1755,8 @@ const CLIP_HELP = [
   '  Claude Code 가 실행 중이면 마우스 입력을 앱이 먼저 가져갑니다.',
   '  그때는 Shift 를 누른 채 끌면 텍스트가 잡힙니다.',
   '더블클릭 단어 · 트리플클릭 줄',
-  'Ctrl+A            현재 프롬프트 표시 텍스트 선택 (복사용)',
-  'Ctrl+Shift+A      터미널 출력 전체 선택',
+  'Ctrl+A            대화 전체 선택 (복사용)',
+  'Ctrl+Shift+A      입력 중인 프롬프트만 선택',
   '',
   '[ 복사 ]',
   'Ctrl+C            선택이 있으면 복사, 없으면 중단(SIGINT)',
@@ -1816,7 +1816,7 @@ function renderTermBar(){
     +   '<button data-resetsize="1" title="드래그로 바꾼 패인 크기를 균등하게 되돌린다">크기 초기화</button>'
     + '</div>'
     + '<span class="clip" title="' + CLIP_HELP + '">'
-    +   '복사 <kbd>Ctrl+C</kbd> · 붙여넣기 <kbd>Ctrl+V</kbd> · 프롬프트 선택 <kbd>Ctrl+A</kbd> ⓘ</span>'
+    +   '복사 <kbd>Ctrl+C</kbd> · 붙여넣기 <kbd>Ctrl+V</kbd> · 전체 선택 <kbd>Ctrl+A</kbd> ⓘ</span>'
     + '<span class="clip" title="자리 옮기기&#10;'
     +   '  ◀ ▶ 버튼   한 칸씩 앞뒤로&#10;'
     +   '  Alt+← / Alt+→   터미널에 입력 중에도 됩니다&#10;'
