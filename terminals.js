@@ -47,6 +47,15 @@ const LIVE_DIR = path.join(os.homedir(), '.claude', 'sessions');
 let seq = 0;
 const terms = new Map();
 
+// Claude Code 는 2.1 부터 많은 환경에서 기본으로 전체 화면 모드(fullscreen rendering,
+// 대체 화면 + 마우스)로 뜬다. 그 모드는 보이는 메시지만 그리고 터미널 스크롤백을 안 써서,
+// 스크롤백으로 지난 대화를 보는 대시보드 패인에서는 이전 대화가 아예 안 보였다.
+// 이 프로세스에만 예전 방식(classic)을 건다. 사용자 전역 설정은 건드리지 않는다.
+// https://code.claude.com/docs/en/fullscreen
+function providerEnv(provider) {
+  return provider === 'codex' ? {} : { CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '1' };
+}
+
 // claude 를 중첩 실행할 때 부모 세션의 환경변수가 섞이지 않게 걸러낸다
 function cleanEnv(extra) {
   const env = {};
@@ -86,7 +95,7 @@ function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model, p
     cols: Math.max(40, Math.min(400, cols || 120)),
     rows: Math.max(10, Math.min(200, rows || 32)),
     cwd,
-    env: cleanEnv(),
+    env: cleanEnv(providerEnv(provider)),
     useConpty: true,
   });
 
@@ -286,7 +295,7 @@ function restart(id, { claudeBin, codexBin, permissionMode }, freshStart) {
       name: 'xterm-256color',
       cols: t.cols, rows: t.rows,
       cwd: t.cwd,
-      env: cleanEnv(),
+      env: cleanEnv(providerEnv(t.provider)),
       useConpty: true,
     });
 
