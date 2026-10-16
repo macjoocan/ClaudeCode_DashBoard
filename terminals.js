@@ -10,6 +10,7 @@ const fs = require('fs');
 const os = require('os');
 const { normalizeMode, permissionArgs } = require('./permission-mode');
 const autoYes = require('./auto-yes');
+const termModes = require('./term-modes');
 
 const SCROLLBACK = 512 * 1024;   // 재접속 시 되살릴 출력량
 const KEEP_DEAD_MS = 10 * 60 * 1000; // 종료된 터미널을 목록에 남겨두는 시간
@@ -134,7 +135,7 @@ function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model, p
 // 그래서 조용해질 때까지 모았다가 한 덩어리로 보낸다. 브라우저는 그 동안 패인을
 // 가려 두고 다 쓴 뒤에 맨 아래를 보여준다.
 function startHold(t) {
-  t.hold = { at: Date.now(), bytes: 0, buf: '' };
+  t.hold = { at: Date.now(), bytes: 0, buf: '', modes: Object.assign({}, t.modesNow || {}) };
   send(t, { t: 'o', d: String.fromCharCode(13, 10)
     + '  이어하기 기록을 정리하는 중입니다…'
     + String.fromCharCode(13, 10) });
@@ -155,7 +156,7 @@ function startHold(t) {
 function endHold(t) {
   if (t.holdTimer) { clearInterval(t.holdTimer); t.holdTimer = null; }
   if (!t.hold) return;
-  const replay = t.hold.buf;
+  const replay = t.hold.buf ? termModes.modePrefix(t.hold.modes) + t.hold.buf : '';
   t.hold = null;
   // reset 은 보내지 않는다. 클라이언트의 term.reset() 은 스크롤백까지 지운다 -
   // 되짚을 기록을 없애는 것이 바로 그것이었다.
@@ -205,8 +206,10 @@ function changesScreen(t, d) {
 function wire(t, p) {
   p.onData(d => {
     if (t.proc !== p) return;
-    t.buf += d;
-    if (t.buf.length > SCROLLBACK) t.buf = t.buf.slice(-SCROLLBACK);
+    // 지금 모드와, 버퍼 앞에서 잘려 나간 부분이 남긴 모드를 따로 기억한다(term-modes.js).
+    t.modesNow = termModes.applyModes(t.modesNow || {}, (t.modeCarry || '') + d);
+    t.modeCarry = d.slice(-24);                 // 덩어리 경계에서 잘린 제어열
+    t.buf = termModes.appendTrim(t.buf, d, SCROLLBACK, t.bufModes || (t.bufModes = {}));
     t.lastAt = Date.now();
     if (changesScreen(t, d)) t.lastRealAt = t.lastAt;
     autoYes.onOutput(t, d, s => { if (t.proc === p) p.write(s); });
@@ -222,8 +225,7 @@ function wire(t, p) {
     // 이어하기 재생 구간이면 모으기만 한다. 끝나면 한 덩어리로 내보낸다.
     if (t.hold) {
       t.hold.bytes += d.length;
-      t.hold.buf += d;
-      if (t.hold.buf.length > SCROLLBACK) t.hold.buf = t.hold.buf.slice(-SCROLLBACK);
+      t.hold.buf = termModes.appendTrim(t.hold.buf, d, SCROLLBACK, t.hold.modes);
       return;
     }
 
@@ -312,6 +314,7 @@ function restart(id, { claudeBin, codexBin, permissionMode }, freshStart) {
     t.lastRealAt = Date.now();
     t.paintRing = [];
     t.buf = '';                       // 옛 프로세스의 출력은 버린다
+    t.bufModes = {}; t.modesNow = {}; t.modeCarry = '';
     t.restarts = (t.restarts || 0) + 1;
     wire(t, p);
 
@@ -503,6 +506,8 @@ function resize(id, cols, rows) {
 
 // 화면을 처음부터 다시 그리게 시킨다.
 //
+// (2026-10-16: Codex 0.16x 는 기본이 대체 화면이 됐다. 아래는 그 전의 인라인 모드 기준 설명이다.
+//  대체 화면에서는 이 다시 그리기가 지금 화면만 새로 그린다 - 다시 붙을 때의 모드 복원은 term-modes.js.)
 // 왜 필요한가: Codex TUI 는 **대체화면(alt screen)을 쓰지 않는다**(실측: ?1049h 가 0).
 // [2J 로 한 번 지운 뒤 [행;열H 절대좌표로 제자리에 덧그린다. 그래서 서버가 모아둔
 // 바이트 로그를 재접속 때 그대로 재생하면, 그동안의 **모든 프레임이 차례로 다시
@@ -563,10 +568,10 @@ function attach(ws, id) {
       // 다시 그리고, 그게 새로고침할 때마다 화면이 쓸려 내려가던 원인이었다.
       // reset 도 보내지 않는다 - 클라이언트의 term.reset() 은 스크롤백을 지운다.
       // 우리가 들고 있는 출력을 그대로 넘긴다. 브라우저는 가린 채로 한 번에 쓴다.
-      ws.send(JSON.stringify({ t: 'replay', d: t.buf }));
+      ws.send(JSON.stringify({ t: 'replay', d: termModes.modePrefix(t.bufModes) + t.buf }));
     } else if (t.buf) {
       // 죽은 터미널은 다시 그려줄 주체가 없다. 마지막 모습이라도 보여준다.
-      ws.send(JSON.stringify({ t: 'o', d: t.buf, replay: true }));
+      ws.send(JSON.stringify({ t: 'o', d: termModes.modePrefix(t.bufModes) + t.buf, replay: true }));
     }
     if (t.exitCode != null) ws.send(JSON.stringify({ t: 'x', code: t.exitCode }));
   } catch {}
