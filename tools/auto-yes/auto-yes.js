@@ -27,6 +27,7 @@ const INSTALLED = path.join(HOME, 'auto-yes.js');
 const CLAUDE_SETTINGS = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'settings.json');
 const CODEX_HOOKS = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'hooks.json');
 const MARK = 'auto-yes';
+const VERSION = '1.1.0';
 
 // 켜져 있어도 자동으로 넘기지 않는 것. 이때는 평소처럼 메뉴가 떠서 사람이 고른다.
 //  - 플랜 승인·질문: 권한이 아니라 사용자의 판단을 묻는 것
@@ -34,10 +35,13 @@ const MARK = 'auto-yes';
 const ALWAYS_ASK_TOOLS = /^(ExitPlanMode|AskUserQuestion)$/;
 const ALWAYS_ASK_COMMANDS = [
   /\brm\s+(-\w*r\w*f|-\w*f\w*r|-r\s+-f|-f\s+-r|--recursive\s+--force|--force\s+--recursive)\b/i,
+  // PowerShell 의 rm 은 Remove-Item 별칭이다: rm -r -fo, rm -Recurse -Force
+  /\brm\b[^|;&]*\s-(r|recurse)\b[^|;&]*\s-(f|fo|force)\b/i,
+  /\brm\b[^|;&]*\s-(f|fo|force)\b[^|;&]*\s-(r|recurse)\b/i,
   /\bRemove-Item\b[^|;]*-Recurse/i,
-  /\b(rd|rmdir)\s+\/s\b/i,
-  /\bdel\s+(\/\w\s+)*\/s\b/i,
-  /\bgit\s+push\b[^|;]*(--force\b|--force-with-lease\b|\s-f\b)/i,
+  /\b(rd|rmdir)\b[^|;&]*\s\/s\b/i,               // /s 가 어디에 있든 (rmdir /q /s)
+  /\bdel\b[^|;&]*\s\/s\b/i,
+  /\bgit\s+push\b[^|;]*(--force\b|--force-with-lease\b|\s-f\b|\s\+\S)/i,   // origin +main 도 강제 푸시
   /\bgit\s+reset\s+--hard\b/i,
   /\bgit\s+clean\s+-\w*f/i,
   /\bformat\s+[a-z]:/i,
@@ -100,7 +104,10 @@ function readJson(file) {
 
 function writeJson(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  if (fs.existsSync(file)) fs.copyFileSync(file, file + '.auto-yes.bak');
+  // 백업은 처음 한 번만 만든다. 매번 덮으면 설치 -> 제거 뒤 남는 건 설치된 상태의 파일이라
+  // 원래 설정으로 돌아갈 길이 사라진다.
+  const bak = file + '.auto-yes.orig.bak';
+  if (fs.existsSync(file) && !fs.existsSync(bak)) fs.copyFileSync(file, bak);
   const tmp = file + '.auto-yes.tmp';
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + os.EOL);
   JSON.parse(fs.readFileSync(tmp, 'utf8'));
@@ -108,8 +115,14 @@ function writeJson(file, data) {
 }
 
 function hookCommand() { return 'node "' + INSTALLED + '" hook'; }
+// 기본 위치(.auto-yes) 와 실제 설치 위치(AUTO_YES_HOME 을 쓰면 다르다) 둘 다 우리 것으로 본다.
+// 하나만 보면 설치할 때마다 항목이 쌓이고 제거도 안 된다.
 function isOurs(entry) {
-  return (entry && entry.hooks || []).some(h => String(h && h.command || '').includes(path.join('.auto-yes', 'auto-yes.js')));
+  const mine = [path.join('.auto-yes', 'auto-yes.js'), INSTALLED].map(s => s.toLowerCase());
+  return (entry && entry.hooks || []).some(h => {
+    const c = String(h && h.command || '').toLowerCase();
+    return mine.some(m => c.includes(m));
+  });
 }
 
 // 우리 항목을 빼고, add 가 있으면 **맨 뒤에** 붙인다. Codex 는 훅 신뢰를 위치(0:0, 1:0 …)로
@@ -155,7 +168,7 @@ function registered() {
 
 function status() {
   const r = registered();
-  console.log('자동 Yes: ' + (fs.existsSync(FLAG) ? '켜짐' : '꺼짐'));
+  console.log('자동 Yes ' + VERSION + ': ' + (fs.existsSync(FLAG) ? '켜짐' : '꺼짐'));
   console.log('  Claude 훅 ' + (r.claude ? '설치됨' : '없음') + '   Codex 훅 ' + (r.codex ? '설치됨' : '없음'));
   try {
     const tail = fs.readFileSync(LOG, 'utf8').trim().split(/\r?\n/).slice(-5);

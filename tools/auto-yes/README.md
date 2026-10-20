@@ -37,8 +37,8 @@ Do you want to proceed?            Would you like to run the following command?
 다음은 평소처럼 메뉴가 뜬다. 사람이 직접 고른다.
 
 - 플랜 승인(`ExitPlanMode`), 질문(`AskUserQuestion`)
-- 되돌리기 어려운 명령: `rm -rf`, `Remove-Item -Recurse`, `rd /s`, `del /s`, `git push --force`,
-  `git reset --hard`, `git clean -f`, `format C:`, `DROP TABLE/DATABASE`
+- 되돌리기 어려운 명령: `rm -rf`(`rm -r -fo` 포함), `Remove-Item -Recurse`, `rd /s`·`rmdir /q /s`, `del /s`,
+  `git push --force`(`git push origin +main` 포함), `git reset --hard`, `git clean -f`, `format C:`, `DROP TABLE/DATABASE`
 - 폴더 신뢰 확인, 업데이트 알림 (권한 요청이 아니라서 훅이 불리지 않는다)
 
 목록은 `auto-yes.js` 위쪽의 `ALWAYS_ASK_COMMANDS` 에 있다.
@@ -48,12 +48,21 @@ Do you want to proceed?            Would you like to run the following command?
 - 켜면 **그 PC 의 모든 Claude / Codex 세션**에 적용된다. 창마다 따로 켤 수 없다.
 - Claude 를 `자동 심사(auto)` 나 `dontAsk` 모드로 쓰면 이 훅이 불리지 않는다. 그 모드에서는 Claude 가 스스로 판단한다.
 - 무엇을 허용했는지는 `%USERPROFILE%\.auto-yes\log.txt` 에 남는다(`ALLOW` 허용 / `ASK` 메뉴로 넘김).
-- 이미 있던 훅 설정은 건드리지 않고 맨 뒤에 하나만 추가한다. 바꾸기 전 파일은 `*.auto-yes.bak` 으로 남는다.
+- 이미 있던 훅 설정은 건드리지 않고 맨 뒤에 하나만 추가한다. **처음 설치하기 전** 파일이
+  `*.auto-yes.orig.bak` 으로 한 번만 남는다(다시 설치·제거해도 덮이지 않는다).
   - Claude: `%USERPROFILE%\.claude\settings.json`
   - Codex: `%USERPROFILE%\.codex\hooks.json`
 - 훅이 실패하거나 입력을 못 읽으면 아무것도 허용하지 않는다. 평소처럼 메뉴가 뜬다.
 
-## 확인한 버전
+## 버전
 
-Claude Code 2.1.292, Codex CLI 0.160.1. 두 앱(Claude 데스크톱 Code 탭, Codex 앱)은 같은 설정 파일을
-읽으므로 적용될 것으로 보지만 앱에서 직접 확인하지는 않았다.
+지금 버전은 `status.bat` 첫 줄에 나온다. 새 버전을 받으면 `install.bat` 만 다시 실행하면 된다.
+
+- 1.1.0 (2026-10-20) - 위험 명령 거르기 보강(`rmdir /q /s`, `git push origin +main`, `rm -r -fo`),
+  원본 설정 백업이 덮이던 문제 수정
+- 1.0.0 (2026-10-07) - 첫 버전
+
+## 확인한 환경
+
+Claude Code 2.1.292 / 2.1.301, Codex CLI 0.160.1 / 0.163.0. 두 앱(Claude 데스크톱 Code 탭, Codex 앱)은
+같은 설정 파일을 읽으므로 적용될 것으로 보지만 앱에서 직접 확인하지는 않았다.
