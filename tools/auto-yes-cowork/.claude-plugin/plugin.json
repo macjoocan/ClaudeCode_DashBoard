@@ -1,0 +1,6 @@
+{
+  "name": "auto-yes-cowork",
+  "version": "0.1.0",
+  "description": "코워크의 권한 승인 창을 자동으로 허용한다. 삭제·강제 푸시·데이터를 바꾸는 SQL·플랜 승인은 계속 직접 고른다. 테스트 버전 - 호출될 때마다 작업 폴더에 auto-yes-cowork-log.txt 를 남긴다.",
+  "author": { "name": "MB팀" }
+}
