@@ -18,14 +18,30 @@ test('risky commands always fall through to the normal menu', () => {
     'rmdir /s /q build', 'rmdir /q /s build', 'rd /Q /S C:\\proj', 'del /f /s /q *.tmp',
     'git push --force', 'git push -f origin main', 'git push origin +main', 'git push --force-with-lease',
     'git reset --hard HEAD~1', 'git clean -fd', 'format D:', 'psql -c "DROP TABLE users"',
+    // 1.2.0
+    'rm -rfv build', 'rm -Rf build', 'sudo /bin/rm -rf /opt/x', 'rm -r --force build', 'rm --force -r build',
+    'rm build -rec -fo', 'ri dist -Recurse', 'Remove-Item dist -r', 'erase /s /q *.tmp', 'find . -name "*.o" -delete',
+    'git push origin --delete feature', 'git push origin -d feature', 'git push origin :feature', 'git push --mirror',
+    'git push --prune origin', 'git checkout -- .', 'git checkout .', 'git checkout -f main', 'git checkout HEAD -- src/a.js',
+    'git restore .', 'git restore -s HEAD~1 a.js', 'git restore --staged --worktree a.js', 'git branch -D feature',
+    'git branch --delete --force feature', 'mysql -e "TRUNCATE TABLE logs"',
   ]) assert.equal(alwaysAsk(bash(c)), 'risky command', c);
   assert.equal(alwaysAsk({ tool_name: 'ExitPlanMode', tool_input: {} }), 'tool ExitPlanMode');
+  // Codex 가 argv 배열로 주는 경우
+  assert.equal(alwaysAsk(bash(['bash', '-lc', 'rm -rf build'])), 'risky command');
+  assert.equal(alwaysAsk(bash(['rm', '-rf', 'build'])), 'risky command');
 });
 
 test('ordinary commands are not mistaken for risky ones', () => {
   for (const c of ['npm test', 'git push origin main', 'git push -u origin feature', 'rm notes.txt',
-    'del notes.txt', 'git status --short', 'rmdir empty-dir', 'node scripts/build.js --release'])
+    'del notes.txt', 'git status --short', 'rmdir empty-dir', 'node scripts/build.js --release',
+    // 1.2.0
+    'rm -r build', 'rm -f notes.txt', 'rm -Force notes.txt', 'rm -Filter *.tmp logs', 'Remove-Item notes.txt -Force',
+    'erase notes.txt', 'find . -name "*.js"', 'git push origin HEAD:main', 'git push origin feature/a+b',
+    'git checkout main', 'git checkout -b feature', 'git restore --staged a.js', 'git restore -S a.js',
+    'git branch -d feature', 'git branch --delete feature', 'npm run format', 'ls -r -f'])
     assert.equal(alwaysAsk(bash(c)), null, c);
+  assert.equal(alwaysAsk(bash(['git', 'status'])), null);
 });
 
 function sandbox() {

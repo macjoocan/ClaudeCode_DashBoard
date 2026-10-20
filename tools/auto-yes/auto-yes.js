@@ -27,32 +27,72 @@ const INSTALLED = path.join(HOME, 'auto-yes.js');
 const CLAUDE_SETTINGS = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'settings.json');
 const CODEX_HOOKS = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'hooks.json');
 const MARK = 'auto-yes';
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
+
+// 통째 삭제는 옵션을 쓰는 방식이 너무 많아 정규식 대신 토막을 나눠 본다.
+//   rm -rf, rm -rfv, rm -R -f, rm -r --force, rm -Recurse -Force, rm -r -fo, ri x -Recurse ...
+// rm 은 재귀+강제가 같이 있어야, Remove-Item / ri 는 재귀만 있어도 묻는다(PowerShell 의 rm 도
+// Remove-Item 별칭이지만 rm -r 만 쓰는 일은 흔해서 예전처럼 둔다).
+// 한 글자 옵션 묶음은 유닉스 rm 의 옵션 글자만 인정한다. 그래야 -Filter 같은 PowerShell 인자를
+// -f -r 로 잘못 읽지 않는다. PowerShell 은 인자 이름을 앞부분만 써도 되므로(-rec, -fo) 접두로 본다.
+const RECURSIVE_DELETE = {
+  test(cmd) {
+    for (const seg of cmd.split(/[|;&\r\n]+/)) {
+      const words = seg.trim().split(/\s+/).map(w => w.replace(/^["'(]+/, ''));
+      const at = words.findIndex(w => /^(rm|ri|remove-item)$/i.test(path.basename(w)));
+      if (at < 0) continue;
+      let r = false, f = false;
+      for (const w of words.slice(at + 1)) {
+        const o = w.toLowerCase();
+        if (o === '--recursive') r = true;
+        else if (o === '--force') f = true;
+        else if (/^-[a-z]+$/.test(o)) {
+          const b = o.slice(1);
+          if ('recurse'.startsWith(b)) r = true;
+          else if ('force'.startsWith(b)) f = true;
+          else if (/^[rfidv]+$/.test(b)) { r = r || b.includes('r'); f = f || b.includes('f'); }
+        }
+      }
+      if (r && (f || !/^rm$/i.test(path.basename(words[at])))) return true;
+    }
+    return false;
+  },
+};
 
 // 켜져 있어도 자동으로 넘기지 않는 것. 이때는 평소처럼 메뉴가 떠서 사람이 고른다.
 //  - 플랜 승인·질문: 권한이 아니라 사용자의 판단을 묻는 것
-//  - 되돌리기 어려운 명령: 통째 삭제, 강제 푸시, 하드 리셋, 포맷, DB 삭제
+//  - 되돌리기 어려운 명령: 통째 삭제, 강제 푸시·원격 브랜치 삭제, 작업 내용 버리기, 포맷, DB 삭제
 const ALWAYS_ASK_TOOLS = /^(ExitPlanMode|AskUserQuestion)$/;
 const ALWAYS_ASK_COMMANDS = [
-  /\brm\s+(-\w*r\w*f|-\w*f\w*r|-r\s+-f|-f\s+-r|--recursive\s+--force|--force\s+--recursive)\b/i,
-  // PowerShell 의 rm 은 Remove-Item 별칭이다: rm -r -fo, rm -Recurse -Force
-  /\brm\b[^|;&]*\s-(r|recurse)\b[^|;&]*\s-(f|fo|force)\b/i,
-  /\brm\b[^|;&]*\s-(f|fo|force)\b[^|;&]*\s-(r|recurse)\b/i,
-  /\bRemove-Item\b[^|;]*-Recurse/i,
+  RECURSIVE_DELETE,
   /\b(rd|rmdir)\b[^|;&]*\s\/s\b/i,               // /s 가 어디에 있든 (rmdir /q /s)
-  /\bdel\b[^|;&]*\s\/s\b/i,
-  /\bgit\s+push\b[^|;]*(--force\b|--force-with-lease\b|\s-f\b|\s\+\S)/i,   // origin +main 도 강제 푸시
+  /\b(del|erase)\b[^|;&]*\s\/s\b/i,
+  /\bfind\b[^|;&]*\s-delete\b/i,
+  // origin +main 도 강제 푸시, origin :main 은 --delete 와 같다
+  /\bgit\s+push\b[^|;]*(--force\b|--force-with-lease\b|\s-f\b|\s\+\S|--delete\b|\s-d\b|--mirror\b|--prune\b|\s:\S)/i,
   /\bgit\s+reset\s+--hard\b/i,
   /\bgit\s+clean\s+-\w*f/i,
+  // 커밋 안 한 변경을 버리는 것. -D / -S 는 대소문자가 뜻을 가르므로 i 를 붙이지 않는다.
+  /\bgit\s+checkout\b[^|;&]*\s(--(\s|$)|\.(\s|$)|-f\b|--force\b)/,
+  /\bgit\s+restore\b(?![^|;&]*\s(--staged|-S)\b)/,  // --staged 만 쓰면 스테이징만 푸는 것
+  /\bgit\s+restore\b[^|;&]*\s(--worktree|-W)\b/,
+  /\bgit\s+branch\b[^|;&]*\s(-D\b|--delete\b[^|;&]*\s(--force|-f)\b|(--force|-f)\b[^|;&]*\s--delete\b)/,
   /\bformat\s+[a-z]:/i,
-  /\bdrop\s+(table|database|schema)\b/i,
+  /\b(drop\s+(table|database|schema)|truncate\s+table)\b/i,
 ];
+
+// Codex 는 명령을 ["bash", "-lc", "..."] 같은 배열로 줄 수도 있다. 그대로 String() 하면
+// "rm,-rf,x" 가 되어 어떤 식에도 안 걸리므로 공백으로 잇는다.
+function commandOf(ti) {
+  if (typeof ti === 'string') return ti;
+  const c = ti.command || ti.cmd || '';
+  return Array.isArray(c) ? c.join(' ') : String(c);
+}
 
 function alwaysAsk(input) {
   const tool = String(input.tool_name || '');
   if (ALWAYS_ASK_TOOLS.test(tool)) return 'tool ' + tool;
-  const ti = input.tool_input || {};
-  const cmd = typeof ti === 'string' ? ti : String(ti.command || ti.cmd || '');
+  const cmd = commandOf(input.tool_input || {});
   for (const re of ALWAYS_ASK_COMMANDS) if (re.test(cmd)) return 'risky command';
   return null;
 }
@@ -76,7 +116,8 @@ function hook() {
   if (input.hook_event_name && input.hook_event_name !== 'PermissionRequest') return;
   if (!fs.existsSync(FLAG)) return;
   const who = (input.transcript_path && /[\\/]\.codex[\\/]/.test(input.transcript_path)) ? 'codex' : 'claude';
-  const brief = String((input.tool_input && (input.tool_input.command || input.tool_input.file_path)) || '')
+  const ti = input.tool_input || {};
+  const brief = (commandOf(ti) || String(ti.file_path || ''))
     .replace(/\s+/g, ' ').slice(0, 160);
   const why = alwaysAsk(input);
   if (why) { log('ASK   ' + who + ' ' + input.tool_name + ' (' + why + ') ' + brief); return; }
@@ -150,7 +191,9 @@ function install() {
   console.log('  Codex : ' + CODEX_HOOKS);
   console.log('');
   console.log('아직 꺼져 있습니다. on.bat 으로 켜세요.');
-  console.log('Codex 는 다음 실행 때 "1 hook is new or changed" 가 뜹니다. 내용을 확인하고 Trust 를 골라야 동작합니다.');
+  console.log('Codex 는 훅을 "신뢰" 해야 동작합니다. 터미널에서 codex 를 한 번 켜서');
+  console.log('  "1 hook is new or changed" 가 뜨면 Trust all and continue 를 고르세요.');
+  console.log('  Codex 앱은 이 확인을 띄우지 않으므로, 앱만 쓰더라도 터미널에서 한 번은 해야 합니다.');
   console.log('이미 열려 있는 Claude / Codex 세션과 앱은 다시 켜야 적용됩니다.');
 }
 

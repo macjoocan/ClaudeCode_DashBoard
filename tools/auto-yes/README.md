@@ -27,7 +27,9 @@ Do you want to proceed?            Would you like to run the following command?
 
 1. 폴더를 아무 데나 두고 `install.bat` 더블클릭
 2. 열려 있던 Claude / Codex 터미널과 앱은 **다시 켠다** (훅은 시작할 때 읽는다)
-3. **Codex 는 처음 한 번** `1 hook is new or changed` 가 뜬다. 내용을 확인하고 `Trust all and continue` 를 고른다. 고르지 않으면 Codex 쪽은 동작하지 않는다
+3. **Codex 는 터미널에서 한 번** `codex` 를 켠다. `1 hook is new or changed` 가 뜨면 내용을 확인하고
+   `Trust all and continue` 를 고른다. 고르지 않으면 Codex 쪽은 동작하지 않는다.
+   **Codex 앱은 이 확인을 띄우지 않는다**(실측 2026-10-20). 앱만 쓰는 사람도 이 단계는 터미널에서 해야 앱에 적용된다.
 4. `on.bat` 으로 켜고, 필요 없으면 `off.bat`
 
 설치하면 스크립트가 `%USERPROFILE%\.auto-yes\` 로 복사된다. 이 폴더는 지워도 되고, 새 버전을 받으면 `install.bat` 을 다시 실행하면 된다.
@@ -37,8 +39,12 @@ Do you want to proceed?            Would you like to run the following command?
 다음은 평소처럼 메뉴가 뜬다. 사람이 직접 고른다.
 
 - 플랜 승인(`ExitPlanMode`), 질문(`AskUserQuestion`)
-- 되돌리기 어려운 명령: `rm -rf`(`rm -r -fo` 포함), `Remove-Item -Recurse`, `rd /s`·`rmdir /q /s`, `del /s`,
-  `git push --force`(`git push origin +main` 포함), `git reset --hard`, `git clean -f`, `format C:`, `DROP TABLE/DATABASE`
+- 통째 삭제: `rm -rf`(`rm -rfv`, `rm -r --force`, `rm -r -fo` 등 옵션 순서·조합 무관), `Remove-Item -Recurse`·`ri -r`,
+  `rd /s`·`rmdir /q /s`, `del /s`·`erase /s`, `find -delete`
+- 원격 덮어쓰기·삭제: `git push --force`(`origin +main` 포함), `git push --delete`·`origin :main`, `git push --mirror`·`--prune`
+- 커밋 안 한 작업 버리기: `git reset --hard`, `git clean -f`, `git checkout -- <경로>`·`git checkout .`·`-f`,
+  `git restore <경로>`(`--staged` 만 쓰면 제외), `git branch -D`
+- 그 밖에: `format C:`, `DROP TABLE/DATABASE/SCHEMA`, `TRUNCATE TABLE`
 - 폴더 신뢰 확인, 업데이트 알림 (권한 요청이 아니라서 훅이 불리지 않는다)
 
 목록은 `auto-yes.js` 위쪽의 `ALWAYS_ASK_COMMANDS` 에 있다.
@@ -58,6 +64,8 @@ Do you want to proceed?            Would you like to run the following command?
 
 지금 버전은 `status.bat` 첫 줄에 나온다. 새 버전을 받으면 `install.bat` 만 다시 실행하면 된다.
 
+- 1.2.0 (2026-10-20) - 위험 명령 빈틈 보강(`rm -rfv`·`rm -r --force`·`ri`·`erase /s`), 원격 브랜치 삭제·
+  미커밋 변경 버리기·`find -delete`·`TRUNCATE TABLE` 추가, 명령이 배열로 와도 검사
 - 1.1.0 (2026-10-20) - 위험 명령 거르기 보강(`rmdir /q /s`, `git push origin +main`, `rm -r -fo`),
   원본 설정 백업이 덮이던 문제 수정
 - 1.0.0 (2026-10-07) - 첫 버전
