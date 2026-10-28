@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI 코딩 세션 런처</title>
+<title>AI Workspace · Claude & Codex</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2312100e'/%3E%3Ccircle cx='16' cy='16' r='7' fill='%23d97757'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/vendor/xterm.css">
 <style>
@@ -723,6 +723,7 @@
     padding:1px 5px;font-size:11px;font-family:Consolas,monospace;color:var(--dim)}
   @media (max-width:520px){ .grid{grid-template-columns:1fr} }
 </style>
+<link rel="stylesheet" href="/studio.css">
 </head>
 <body>
 <header>
@@ -738,8 +739,10 @@
     <button class="btn ghost" id="layout" title="한 줄에 하나씩 넓게 보기">넓게</button>
     <button class="btn ghost" id="refresh" title="다시 스캔">&#8635;</button>
     <button class="btn ghost" id="attention-toggle" aria-controls="attention-panel" aria-expanded="false">알림 0</button>
+    <button class="btn ghost" id="cleanup-open">세션 정리</button>
   </div>
   <div class="tabs" id="tabs">
+    <button class="tab" data-tab="studio">작업 공간<span class="n">NEW</span></button>
     <button class="tab on" data-tab="all">전체<span class="n" id="n-all">0</span></button>
     <button class="tab" data-tab="fav">즐겨찾기<span class="n" id="n-fav">0</span></button>
     <button class="tab" data-tab="live">실행 중<span class="n" id="n-live">0</span></button>
@@ -753,6 +756,7 @@
 </header>
 
 <main id="main">
+  <div id="studiowrap" hidden></div>
   <div class="session-filters" id="session-filters">
     <label>AI <select id="filter-provider"><option value="all">전체 AI</option><option value="claude">Claude</option><option value="codex">Codex</option></select></label>
     <label>최근 활동 <select id="filter-period"><option value="all">전체 기간</option><option value="today">오늘</option><option value="7">최근 7일</option><option value="30">최근 30일</option></select></label>
@@ -835,6 +839,9 @@
 <script src="/timeline.js"></script>
 <script src="/workshop.js"></script>
 <script src="/harness-ui.js"></script>
+<script src="/studio.js"></script>
+<script src="/cleanup.js"></script>
+<script src="/project-paths.js"></script>
 <script src="/qr.js"></script>
 <script src="/mobile-pair.js"></script>
 <script>
@@ -1371,6 +1378,7 @@ function sessionRow(p, s, emb){
     +   (s.hidden ? '<span class="tag hid">숨김</span>' : '')
     +   '<span class="swhen" title="'+stamp(s.mtime)+'">'+ago(s.mtime)+'</span>'
     +   usageSpan(s)
+    +   '<button class="btn xs" data-reconnect="'+esc(p.cwd)+'" title="프로젝트 폴더 다시 연결">폴더 다시 연결</button>'
     +   '<button class="icon '+(s.fav?'on':'')+'" data-fav="'+vk+'" title="즐겨찾기">'+(s.fav?'★':'☆')+'</button>'
     +   sessTools(s, vk)
     + '</div>'
@@ -1554,6 +1562,7 @@ function projectCard(p, ss, emb){
     +       (p.exists ? '' : '<span class="tag err">폴더 없음</span>')
     +     '</div>'
     +   '</div>'
+    +   '<button class="btn xs" data-reconnect="'+esc(p.cwd)+'" title="이동한 프로젝트를 새 폴더에 다시 연결">폴더 다시 연결</button>'
     +   '<button class="icon '+(p.pinned?'on':'')+'" data-pin="'+esc(p.key)+'" title="상단 고정">'+(p.pinned?'★':'☆')+'</button>'
     +   '<button class="icon sx" data-hideproj="'+esc(p.key)+'" title="'
     +     (p.hidden ? '이 프로젝트 다시 보이기'
@@ -1673,20 +1682,25 @@ window.addEventListener('message', function(e){
 });
 
 function render(){
+  const isStudio = TAB === 'studio';
   const isTerm  = TAB === 'term';
   const isGraph = TAB === 'graph';
   const isCfg   = TAB === 'cfg';
   const isTl    = TAB === 'flow';
   const isMd    = TAB === 'md';
   $('#session-filters').hidden = !['all', 'fav', 'live'].includes(TAB);
-  $('#termwrap').hidden    = !isTerm;
+  $('#termwrap').hidden    = !isTerm && !(isStudio && CC.studio.showTerminals());
+  $('#studiowrap').hidden = !isStudio;
+  $('#main').classList.toggle('studiomode', isStudio);
+  if (!isStudio) CC.term.setScope(null);
   $('#graphwrap').hidden   = !isGraph;
   $('#cfgwrap').hidden     = !isCfg;
   $('#tlwrapouter').hidden = !isTl;
   $('#mdwrap').hidden      = !isMd;
-  $('#list').hidden = isTerm || isGraph || isCfg || isTl || isMd;
-  $('#listbar').hidden = isTerm || isGraph || isCfg || isTl || isMd;
+  $('#list').hidden = isStudio || isTerm || isGraph || isCfg || isTl || isMd;
+  $('#listbar').hidden = isStudio || isTerm || isGraph || isCfg || isTl || isMd;
   $('#main').classList.toggle('termmode', isTerm || isMd);
+  if (isStudio){ CC.studio.enter(DATA); return; }
   if (isMd){ mdEnter(); return; }
   if (isTl){ CC.timeline.load(true); return; }
   if (isTerm){ CC.term.refit(); return; }
@@ -2604,6 +2618,9 @@ else window.addEventListener('resize', syncHeaderHeight);
 
 /* ---------------------------------------------------------- 시작 */
 CC.term.init($('#termhost'), function(){ renderTermBar(); renderCounts(); });
+CC.studio.init($('#studiowrap'), { toast: toast, render: render, loadTerms: loadTerms, projects: () => DATA });
+CC.cleanup.init({ toast: toast, reload: async () => { await loadTerms(); await load(); } });
+CC.projectPaths.init({ toast: toast, reload: load });
 syncHeaderHeight();
 
 // 실시간 훅 이벤트: 훅 설치 여부와 무관하게 스트림에 붙어 둔다 (설치하면 바로 흐른다)

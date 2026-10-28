@@ -53,4 +53,4 @@ function resolveMarkdownPath(input, cwd, roots = []) {
   return { full: match, dir: path.dirname(match), file: path.basename(match) };
 }
 
-module.exports = { resolveMarkdownPath };
+module.exports = { resolveMarkdownPath, normalizeMarkdownPath };

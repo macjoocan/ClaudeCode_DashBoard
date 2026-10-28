@@ -40,7 +40,27 @@ const { requestedMode, createStore } = require('./permission-mode');
 const permStore = createStore(path.join(__dirname, 'permissions.json'));
 const scribe = require('./scribe');
 const documents = require('./documents');
-const { resolveMarkdownPath } = require('./md-resolve');
+const { resolveMarkdownPath, normalizeMarkdownPath } = require('./md-resolve');
+const { createStudio } = require('./studio');
+const { createPreview } = require('./studio-preview');
+const { studioRoutes } = require('./studio-api');
+const { createCleanup } = require('./session-cleanup');
+const { createProjectPaths } = require('./project-paths');
+const projectPaths = createProjectPaths(path.join(__dirname, 'project-paths.json'));
+terminals.configurePaths(prepareProjectLaunch);
+
+function prepareProjectLaunch(options) {
+  const cwd = projectPaths.resolve(options.cwd);
+  // --continue/--last search the new cwd only; explicitly select the latest
+  // session in the merged project so relocated history is not skipped.
+  if (options.action === 'continue' && projectPaths.list().some(r => projectPaths.resolve(r.from).toLowerCase() === String(cwd).toLowerCase())) {
+    const p = scan().find(p => p.key === String(cwd).toLowerCase());
+    const latest = p?.sessions.filter(s => s.provider === (options.provider === 'codex' ? 'codex' : 'claude'))
+      .sort((a, b) => b.mtime - a.mtime)[0];
+    if (latest) return { ...options, cwd, action: 'resume', sessionId: latest.id };
+  }
+  return { ...options, cwd };
+}
 const { createGuard } = require('./ask-guard');
 const { createRunner } = require('./ask-run');
 const { createAsk } = require('./ask');    // 마크다운 편집기 (SCRIBE 빌드물 + 파일 브리지)
@@ -49,7 +69,7 @@ const HOOK_URL = `http://${'127.0.0.1'}:${Number(process.env.CC_LAUNCHER_PORT ||
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.CC_LAUNCHER_PORT || 7788);
-const API_VERSION = 9; // launchers use this to distinguish a stale in-memory server
+const API_VERSION = 11; // launchers use this to distinguish a stale in-memory server
 const CLAUDE_HOME = path.join(os.homedir(), '.claude');
 const PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects');
 const LIVE_DIR = path.join(CLAUDE_HOME, 'sessions'); // <pid>.json = 살아있는 세션 상태
@@ -182,6 +202,30 @@ function findBin(name) {
     return execFileSync('where.exe', [name], { encoding: 'utf8' }).split(/\r?\n/).find(Boolean) || null;
   } catch { return null; }
 }
+
+const studioStateDir = process.env.CC_STUDIO_STATE_DIR || path.join(__dirname, '.studio');
+const studio = createStudio({
+  stateDir: studioStateDir, terminals,
+  startTerminal: opts => terminals.create({ ...opts, claudeBin: CLAUDE_BIN, codexBin: CODEX_BIN }),
+});
+const studioPreview = createPreview({ stateDir: studioStateDir });
+const handleStudio = studioRoutes({
+  studio, preview: studioPreview, terminals, readBody, json,
+  readTranscript(provider, id) {
+    if (provider === 'codex') return codex.transcript(id, 40).msgs || [];
+    const found = findScannedSession('claude', id);
+    return found ? transcript(found.s.slug, id, 40).messages || [] : [];
+  },
+});
+const sessionCleanup = createCleanup({
+  claudeDir: LIVE_DIR, codexDir: codex.LIVE_DIR,
+  backupDir: path.join(studioStateDir, 'cleanup-backups'), terminals, killTree,
+  sessions: () => scan().flatMap(p => p.sessions.map(s => ({ ...s, cwd: p.cwd }))),
+  hide(row) {
+    const list = loadHidden(), token = sessionToken(row.provider, row.slug, row.id);
+    if (!list.includes(token)) { list.push(token); saveHidden(list); }
+  },
+});
 function findClaudeBin() {
   const local = path.join(os.homedir(), '.local', 'bin', 'claude.exe');
   if (fs.existsSync(local)) return local;
@@ -385,7 +429,7 @@ function scan() {
       if (!info.firstPrompt && !info.lastPrompt && !info.aiTitle) continue;
 
       const id = path.basename(f, '.jsonl');
-      const cwd = info.cwd || d.name;
+      const cwd = projectPaths.resolve(info.cwd || d.name);
       const key = cwd.toLowerCase();
       if (!projects.has(key)) {
         projects.set(key, {
@@ -419,11 +463,12 @@ function scan() {
   const codexLive = codex.liveMap();
   for (const s of codex.sessions()) {
     if (!s.cwd) continue;
-    const key = s.cwd.toLowerCase();
+    const cwd = projectPaths.resolve(s.cwd);
+    const key = cwd.toLowerCase();
     if (!projects.has(key)) {
       projects.set(key, {
-        key, cwd: s.cwd, name: path.basename(s.cwd) || s.cwd,
-        exists: fs.existsSync(s.cwd),
+        key, cwd, name: path.basename(cwd) || cwd,
+        exists: fs.existsSync(cwd),
         gitBranch: s.branch, sessions: [],
       });
     }
@@ -448,7 +493,8 @@ function scan() {
   const pins = loadPins();
   const list = [...projects.values()];
   for (const p of list) {
-    p.hidden = hid.has('proj:' + p.key);
+    p.hidden = [...hid].some(h => h.startsWith('proj:') && projectPaths.resolve(h.slice(5)).toLowerCase() === p.key);
+    p.previousPaths = projectPaths.list().filter(r => projectPaths.resolve(r.from).toLowerCase() === p.key).map(r => r.from);
     p.sessions.sort((a, b) => {
       const la = a.live ? 1 : 0, lb = b.live ? 1 : 0;
       return (lb - la) || (b.mtime - a.mtime);
@@ -458,7 +504,7 @@ function scan() {
     p.busyCount = p.sessions.filter(s => s.live && s.live.status === 'busy').length;
     p.waitCount = p.sessions.filter(s => s.live && s.live.status === 'waiting').length;
     p.favCount = p.sessions.filter(s => s.fav).length;
-    p.pinned = pins.includes(p.key);
+    p.pinned = pins.some(k => projectPaths.resolve(k).toLowerCase() === p.key);
   }
   list.sort((a, b) => (b.pinned - a.pinned) || (b.liveCount - a.liveCount) || (b.mtime - a.mtime));
   return list;
@@ -582,18 +628,19 @@ function claudeCommand(action, sessionId, extra) {
 }
 
 // claudeCommand 와 형제 함수. codex CLI 를 외부 터미널에서 실행할 명령 문자열을 만든다.
-function codexCommand(action, sessionId) {
+function codexCommand(action, sessionId, cwd) {
   const q = s => `'${String(s).replace(/'/g, "''")}'`;
   if (!CODEX_BIN) throw new Error('codex 를 찾을 수 없습니다 (npm i -g @openai/codex)');
-  return [`& ${q(CODEX_BIN)}`, ...codex.codexArgs(action, sessionId)].join(' ');
+  return [`& ${q(CODEX_BIN)}`, ...codex.codexArgs(action, sessionId, cwd).map(q)].join(' ');
 }
 
 function launch({ action, cwd, sessionId, title, extra, provider, newWindow }) {
+  ({ action, cwd, sessionId } = prepareProjectLaunch({ action, cwd, sessionId, provider }));
   if (!cwd || !fs.existsSync(cwd)) throw new Error(`폴더가 없습니다: ${cwd}`);
   if ((action === 'resume' || action === 'fork') && !SAFE_ID.test(String(sessionId || '')))
     throw new Error('세션 ID 가 올바르지 않습니다');
   const inner = provider === 'codex'
-    ? codexCommand(action, sessionId)
+    ? codexCommand(action, sessionId, cwd)
     : claudeCommand(action, sessionId, extra);
   const tabTitle = title || path.basename(cwd);
 
@@ -922,7 +969,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
   const origin = req.headers.origin;
   if (req.method === 'POST' && origin &&
-      !origin.startsWith(`http://${HOST}:${PORT}`) && !origin.startsWith(`http://localhost:${PORT}`)) {
+      origin !== `http://${HOST}:${PORT}` && origin !== `http://localhost:${PORT}`) {
     return json(res, 403, { error: 'origin not allowed' });
   }
 
@@ -930,7 +977,15 @@ const server = http.createServer(async (req, res) => {
     if (await mobile.handleDashboardApi(url, req, res, json, readBody)) return;
     if (url.pathname === '/api/health') {
       return json(res, 200, { ok: true, app: 'cc-launcher', apiVersion: API_VERSION, port: PORT,
-        capabilities: { sessionPermissionMode: true, autoYes: true } });
+        capabilities: { sessionPermissionMode: true, autoYes: true, studio: true } });
+    }
+
+    if (await handleStudio(req, res, url)) return;
+    if (url.pathname === '/api/cleanup' && req.method === 'GET') {
+      return json(res, 200, { ok: true, ...await sessionCleanup.inventory(url.searchParams.get('fresh') === '1') });
+    }
+    if (url.pathname === '/api/cleanup/run' && req.method === 'POST') {
+      return json(res, 200, { ok: true, ...await sessionCleanup.execute(await readBody(req)) });
     }
 
     if (url.pathname === '/api/projects') {
@@ -1013,6 +1068,16 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, via: launch(b), newWindow: !!b.newWindow });
     }
 
+    if (url.pathname === '/api/projects/reconnect' && req.method === 'POST') {
+      const b = await readBody(req);
+      if (b.confirm !== true) throw new Error('폴더 다시 연결 확인이 필요합니다');
+      const result = projectPaths.set(b.from, b.to);
+      // Rewrite dashboard-only flags to the canonical key, retaining session tokens.
+      savePins([...new Set(loadPins().map(k => projectPaths.resolve(k).toLowerCase()))]);
+      saveHidden([...new Set(loadHidden().map(k => k.startsWith('proj:') ? 'proj:' + projectPaths.resolve(k.slice(5)).toLowerCase() : k))]);
+      return json(res, 200, { ok: true, ...result });
+    }
+
     if (url.pathname === '/api/focus' && req.method === 'POST') {
       const b = await readBody(req);
       const info = await focusWindow(Number(b.pid));
@@ -1089,7 +1154,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/md/resolve' && req.method === 'POST') {
       const b = await readBody(req);
       const roots = scan().map(project => project.cwd);
-      return json(res, 200, { ok: true, ...resolveMarkdownPath(b.path, b.cwd, roots) });
+      return json(res, 200, { ok: true, ...resolveMarkdownPath(projectPaths.resolveFile(normalizeMarkdownPath(b.path)), projectPaths.resolve(b.cwd), roots) });
     }
 
     if (url.pathname === '/api/md/image' && req.method === 'POST') {
@@ -1158,6 +1223,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/api/open' && req.method === 'POST') {
       const b = await readBody(req);
+      b.cwd = projectPaths.resolveFile(b.cwd);
       if (b.target === 'vscode') openVSCode(b.cwd); else openFolder(b.cwd);
       return json(res, 200, { ok: true });
     }
@@ -1613,6 +1679,8 @@ function shutdown() {
   terminals.killAll();
   sessionBridge.close();
   handoffManager.close();
+  studio.close();
+  studioPreview.close();
   process.exit(0);
 }
 process.on('SIGINT', shutdown);
@@ -1628,6 +1696,8 @@ server.on('error', err => {
     console.log('기존 서버와 내장 터미널은 그대로 유지합니다.');
     sessionBridge.close();
     handoffManager.close();
+    studio.close();
+    studioPreview.close();
     if (!process.env.CC_LAUNCHER_NO_OPEN) {
       try { spawn('cmd.exe', ['/c', 'start', '', addr], { detached: true, stdio: 'ignore' }).unref(); } catch {}
     }
@@ -1636,6 +1706,8 @@ server.on('error', err => {
   console.error('서버를 시작하지 못했습니다:', (err && err.message) || err);
   sessionBridge.close();
   handoffManager.close();
+  studio.close();
+  studioPreview.close();
   process.exit(1);
 });
 

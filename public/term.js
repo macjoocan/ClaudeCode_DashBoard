@@ -7,8 +7,8 @@
   var CC = window.CC || (window.CC = {});
 
   var THEME = {
-    background: '#12100e', foreground: '#efe9e1', cursor: '#d97757',
-    cursorAccent: '#12100e', selectionBackground: 'rgba(217,119,87,.32)',
+    background: '#10131b', foreground: '#edf1fa', cursor: '#9bb7ff',
+    cursorAccent: '#10131b', selectionBackground: 'rgba(155,183,255,.28)',
     black: '#12100e', red: '#c0554a', green: '#7fb069', yellow: '#e0b341',
     blue: '#5fa8d3', magenta: '#b07cc6', cyan: '#5fb3b3', white: '#d5cdc2',
     brightBlack: '#6f665b', brightRed: '#e0776a', brightGreen: '#9ecb87',
@@ -19,6 +19,7 @@
   var views = new Map();     // termId -> view
   var order = [];            // 표시 순서 (앞쪽이 먼저 배치된다)
   var active = null;         // 포커스된 termId
+  var scope = null;          // 작업 화면에서만 선택한 작업의 PTY를 보여 준다
   var layout = 1;            // 1|2|3|4|0(전체)
   var orient = 'grid';       // grid(가로세로) | cols(가로=좌우) | rows(세로=위아래)
   var onChange = null;
@@ -66,8 +67,17 @@
 
   // 화면에 배치할 터미널 수
   function slots() {
+    if (scope !== null) return displayOrder().length;
     if (layout === 0) return order.length;      // 전체
     return Math.min(layout, order.length);
+  }
+  function displayOrder() { return scope === null ? order : order.filter(function (id) { return scope.indexOf(id) >= 0; }); }
+  function setScope(ids) {
+    var next = ids == null ? null : ids.slice();
+    if (JSON.stringify(next) === JSON.stringify(scope)) return;
+    scope = next;
+    if (scope && scope.indexOf(active) < 0) active = displayOrder()[0] || null;
+    apply();
   }
 
   // 배치 방향
@@ -126,7 +136,7 @@
   }
 
   function fitVisible(n) {
-    order.slice(0, n).forEach(function (id) {
+    displayOrder().slice(0, n).forEach(function (id) {
       var v = views.get(id);
       if (!v) return;
       fitView(v);
@@ -157,7 +167,7 @@
     var n = slots();
 
     // 활성 터미널이 항상 보이도록 순서를 조정한다
-    if (active && order.indexOf(active) >= n) {
+    if (scope === null && active && order.indexOf(active) >= n) {
       var i = order.indexOf(active);
       order.splice(i, 1);
       order.unshift(active);
@@ -174,10 +184,12 @@
       if (rem !== 0) lastSpan = geo.cols - rem + 1;
     }
 
-    order.forEach(function (id, idx) {
+    var shownOrder = displayOrder();
+    order.forEach(function (id) {
+      var idx = shownOrder.indexOf(id);
       var v = views.get(id);
       if (!v) return;
-      var visible = idx < n;
+      var visible = idx >= 0 && idx < n;
       v.el.hidden = !visible;
       v.el.classList.toggle('active', id === active);
       v.el.classList.toggle('solo', n === 1);
@@ -1495,7 +1507,7 @@
 
   CC.term = {
     init: init, open: open, sync: sync, refit: refit, scheduleRefit: scheduleRefit,
-    show: focus, focus: focus, solo: solo,
+    show: focus, focus: focus, solo: solo, setScope: setScope,
     setLayout: setLayout, getLayout: getLayout, slots: slots,
     setOrient: setOrient, getOrient: getOrient,
     stop: stop, close: close, drop: drop,
@@ -1507,7 +1519,7 @@
     // 디버깅·테스트용: 특정 터미널의 xterm 인스턴스
     xterm: function (id) { var v = views.get(id); return v ? v.term : null; },
     get current() { return active; },
-    get visibleIds() { return order.slice(0, slots()); },
+    get visibleIds() { return displayOrder().slice(0, slots()); },
     has: function (id) { return views.has(id); }
   };
 })();

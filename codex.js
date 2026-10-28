@@ -190,12 +190,13 @@ function sessions() {
 }
 
 // 실행 시 codex CLI 에 넘길 인자를 만든다. Claude 쪽 claudeArgs 와 대응.
-function codexArgs(action, sessionId) {
+function codexArgs(action, sessionId, cwd) {
   // Windows managed daemon can open visible console windows for helper processes
   // on every turn. Keep dashboard-launched interactive sessions in the TUI process.
   // Keep approval prompts inside Codex's review flow for dashboard-launched sessions.
   // This is a per-process override; the user's global Codex config stays untouched.
   const base = ['--no-daemon', '-c', 'approvals_reviewer=auto_review'];
+  if (cwd) base.push('--cd', cwd);
   if (action === 'resume' || action === 'fork') {
     if (!sessionId) throw new Error('세션 ID 가 필요합니다');
     return [...base, action, sessionId];

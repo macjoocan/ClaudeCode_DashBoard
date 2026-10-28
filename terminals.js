@@ -47,6 +47,8 @@ const LIVE_DIR = path.join(os.homedir(), '.claude', 'sessions');
 
 let seq = 0;
 const terms = new Map();
+let preparePaths = options => options;
+function configurePaths(prepare) { preparePaths = prepare; }
 
 // Claude Code 는 2.1 부터 많은 환경에서 기본으로 전체 화면 모드(fullscreen rendering,
 // 대체 화면 + 마우스)로 뜬다. 그 모드는 보이는 메시지만 그리고 터미널 스크롤백을 안 써서,
@@ -78,6 +80,7 @@ function claudeArgs(action, sessionId) {
 }
 
 function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model, provider, codexBin, permissionMode }) {
+  ({ action, cwd, sessionId } = preparePaths({ action, cwd, sessionId, provider }));
   permissionMode = normalizeMode(permissionMode);
   if (!cwd || !fs.existsSync(cwd)) throw new Error(`폴더가 없습니다: ${cwd}`);
 
@@ -86,7 +89,7 @@ function create({ action, cwd, sessionId, title, cols, rows, claudeBin, model, p
   if (!bin) throw new Error(isCodex ? 'codex 를 찾을 수 없습니다' : 'claude 를 찾을 수 없습니다');
 
   const args = isCodex
-    ? require('./codex.js').codexArgs(action, sessionId)
+    ? require('./codex.js').codexArgs(action, sessionId, cwd)
     : claudeArgs(action, sessionId);
   if (model && !isCodex) args.push('--model', model);
   args.push(...permissionArgs(provider, permissionMode));
@@ -273,6 +276,11 @@ function restart(id, { claudeBin, codexBin, permissionMode }, freshStart) {
   const bin = isCodex ? codexBin : claudeBin;
   if (!bin) return Promise.reject(new Error(isCodex ? 'codex 를 찾을 수 없습니다' : 'claude 를 찾을 수 없습니다'));
 
+  // Validate the new cwd BEFORE stopping the old process.
+  const nextCwd = preparePaths({ cwd: t.cwd, provider: t.provider }).cwd;
+  if (!nextCwd || !fs.existsSync(nextCwd) || !fs.statSync(nextCwd).isDirectory())
+    return Promise.reject(new Error('프로젝트 폴더를 다시 연결해 주세요: ' + nextCwd));
+
   t.restarting = true;
   const dying = t.proc;
   const wait = new Promise(resolve => {
@@ -290,18 +298,19 @@ function restart(id, { claudeBin, codexBin, permissionMode }, freshStart) {
     const sid = freshStart ? null : t.sessionId;
     const action = sid ? 'resume' : 'new';
     const args = isCodex
-      ? require('./codex.js').codexArgs(action, sid)
+      ? require('./codex.js').codexArgs(action, sid, nextCwd)
       : claudeArgs(action, sid);
     args.push(...permissionArgs(t.provider, mode));
     const p = pty.spawn(bin, args, {
       name: 'xterm-256color',
       cols: t.cols, rows: t.rows,
-      cwd: t.cwd,
+      cwd: nextCwd,
       env: cleanEnv(providerEnv(t.provider)),
       useConpty: true,
     });
 
     t.proc = p;
+    t.cwd = nextCwd;
     t.permissionMode = mode;
     t.ayFresh = '';
     t.pid = p.pid;
@@ -593,7 +602,7 @@ function killAll() {
   for (const t of terms.values()) { if (t.exitCode == null) { try { t.proc.kill(); } catch {} } }
 }
 
-module.exports = { create, restart, fresh, list, get, info, write, resize, repaint, repaintsInPlace, setAutoYes,
+module.exports = { create, restart, fresh, configurePaths, list, get, info, write, resize, repaint, repaintsInPlace, setAutoYes,
   kill, close, attach, killAll,
   // 아래 둘은 테스트용 - paintOf/sameDir 는 순수 함수, _terms 는 등록된 터미널 맵이다.
   paintOf, sameDir, _terms: terms };
