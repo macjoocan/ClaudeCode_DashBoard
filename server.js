@@ -54,6 +54,9 @@ const CLAUDE_HOME = path.join(os.homedir(), '.claude');
 const PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects');
 const LIVE_DIR = path.join(CLAUDE_HOME, 'sessions'); // <pid>.json = 살아있는 세션 상태
 const PUBLIC_DIR = path.join(__dirname, 'public');
+// 폰으로 이어서 하기 (mobile.js). 켜기 전에는 아무 포트도 열지 않는다.
+const mobile = require('./mobile').createMobile({ terminals, publicDir: PUBLIC_DIR,
+  dataFile: path.join(__dirname, 'mobile-devices.json'), port: Number(process.env.CC_MOBILE_PORT || 7789) });
 const PINS_FILE = path.join(__dirname, 'pins.json');
 const FAVS_FILE = path.join(__dirname, 'favorites.json'); // "<slug>/<sessionId>" 목록
 const HIDDEN_FILE = path.join(__dirname, 'hidden.json');  // 목록에서 숨긴 세션 (같은 형식)
@@ -924,6 +927,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    if (await mobile.handleDashboardApi(url, req, res, json, readBody)) return;
     if (url.pathname === '/api/health') {
       return json(res, 200, { ok: true, app: 'cc-launcher', apiVersion: API_VERSION, port: PORT,
         capabilities: { sessionPermissionMode: true, autoYes: true } });
@@ -1605,6 +1609,7 @@ server.on('upgrade', (req, socket, head) => {
 function shutdown() {
   console.log('');
   console.log('종료합니다 - 내장 터미널의 AI 프로세스를 정리합니다.');
+  mobile.close();
   terminals.killAll();
   sessionBridge.close();
   handoffManager.close();

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>대시보드 · 폰</title>
+<link rel="stylesheet" href="/m/vendor/xterm.css">
+<style>
+  :root { --bg:#141714; --panel:#1d211d; --line:#2e342e; --fg:#e6ebe6; --dim:#9aa59b; --accent:#5cc796; --warn:#e7a85a; --bad:#e5786d; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+  button:active { background: var(--line); }
+  #notice { padding: 24px 18px; color: var(--dim); }
+  #notice b { color: var(--fg); }
+  #list { padding: 8px 12px; display: grid; gap: 8px; overflow-y: auto; }
+  .item { display: grid; gap: 2px; text-align: left; padding: 12px 14px; }
+  .item .t { font-weight: 600; }
+  .item .s { font-size: 13px; color: var(--dim); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--dim); }
+  .dot.busy { background: var(--warn); } .dot.idle { background: var(--accent); } .dot.dead { background: var(--bad); }
+  #termview { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  #screen { flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; background: #0f120f; }
+  #screen .xterm { padding: 4px; }
+  #keys { display: flex; gap: 6px; padding: 6px 8px; overflow-x: auto; border-top: 1px solid var(--line); }
+  #keys button { flex: none; padding: 6px 10px; font-size: 14px; }
+  #compose { display: flex; gap: 6px; padding: 6px 8px 8px; }
+  #compose textarea { flex: 1; min-width: 0; resize: none; height: 44px; font: inherit; color: var(--fg);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  #compose button { background: var(--accent); color: #0f120f; border: 0; font-weight: 700; }
+  #state { font-size: 12px; color: var(--dim); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <button id="back" hidden>목록</button>
+  <h1 id="title">대시보드</h1>
+  <span id="state"></span>
+  <button id="fontdown" aria-label="글자 작게">가−</button>
+  <button id="fontup" aria-label="글자 크게">가+</button>
+</header>
+<div id="notice" hidden></div>
+<div id="list" hidden></div>
+<div id="termview" hidden>
+  <div id="screen"></div>
+  <div id="keys">
+    <button data-k="enter">Enter</button>
+    <button data-k="esc">Esc</button>
+    <button data-k="up">↑</button>
+    <button data-k="down">↓</button>
+    <button data-k="1">1</button>
+    <button data-k="2">2</button>
+    <button data-k="3">3</button>
+    <button data-k="tab">Tab</button>
+    <button data-k="ctrlc">Ctrl+C</button>
+    <button data-k="newline">줄바꿈</button>
+  </div>
+  <form id="compose">
+    <textarea id="text" placeholder="보낼 말 (보내기 누르면 Enter 까지)" autocomplete="off"></textarea>
+    <button type="submit">보내기</button>
+  </form>
+</div>
+<script src="/m/vendor/xterm.js"></script>
+<script src="/m/mobile.js"></script>
+</body>
+</html>
